@@ -2,7 +2,7 @@
 services:
   wyoming-rapidfuzz-proxy:
     container_name: wyoming-rapidfuzz-proxy
-    image: wyoming-rapidfuzz-proxy:0.0.2
+    image: wyoming-rapidfuzz-proxy:latest
     environment:
       - URI=tcp://0.0.0.0:10310
       - STT_URI=tcp://HOME_ASSISTANT_IP_OR_URI:10300
@@ -19,4 +19,3 @@ services:
       - 10310:10310
     restart: unless-stopped
         
-

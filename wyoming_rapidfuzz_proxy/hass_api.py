@@ -11,8 +11,11 @@ import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
 
+# Constants for light supported color modes
 RGB_MODES = {"hs", "rgb", "rgbw", "rgbww", "xy"}
 BRIGHTNESS_MODES = RGB_MODES | {"brightness", "white"}
+
+# Supported feature flags for different domains
 FAN_SET_SPEED = 1
 COVER_SET_POSITION = 4
 MEDIA_PLAYER_PAUSE = 1
@@ -22,7 +25,7 @@ MEDIA_PLAYER_NEXT_TRACK = 32
 
 @dataclass
 class Entity:
-    """Home Assistant entity."""
+    """Home Assistant entity representation."""
 
     names: List[str]
     domain: str
@@ -65,7 +68,7 @@ class Entity:
 
 @dataclass
 class Area:
-    """Home Assistant area."""
+    """Home Assistant area representation."""
 
     names: List[str]
     _hash: str = ""
@@ -85,7 +88,7 @@ class Area:
 
 @dataclass
 class Floor:
-    """Home Assistant floor."""
+    """Home Assistant floor representation."""
 
     names: List[str]
     _hash: str = ""
@@ -105,7 +108,7 @@ class Floor:
 
 @dataclass
 class Things:
-    """Exposed things in Home Assistant."""
+    """Exposed things (entities, areas, floors) in Home Assistant."""
 
     entities: List[Entity] = field(default_factory=list)
     areas: List[Area] = field(default_factory=list)
@@ -121,10 +124,10 @@ class Things:
             for entity_hash in sorted(e.get_hash() for e in self.entities):
                 hasher.update(entity_hash.encode("utf-8"))
 
-            for area_hash in sorted(e.get_hash() for e in self.entities):
+            for area_hash in sorted(e.get_hash() for e in self.areas):
                 hasher.update(area_hash.encode("utf-8"))
 
-            for floor_hash in sorted(e.get_hash() for e in self.entities):
+            for floor_hash in sorted(e.get_hash() for e in self.floors):
                 hasher.update(floor_hash.encode("utf-8"))
 
             for extra_sentence in sorted(self.extra_sentences):
@@ -218,6 +221,7 @@ def _remove_template_syntax(name: str) -> str:
 
 
 def _coerce_list(str_or_list: Union[str, List[str]]) -> List[str]:
+    """Ensure the input is a list of strings."""
     if isinstance(str_or_list, str):
         return [str_or_list]
 
@@ -234,13 +238,14 @@ class HomeAssistantInfo:
 
 
 async def get_hass_info(token: str, uri: str) -> HomeAssistantInfo:
-    """Use HA websocket API to get exposed entities/areas/floors."""
+    """Use HA websocket API to get exposed entities, areas, and floors."""
     things = Things()
     pipeline_languages: Set[str] = set()
 
     current_id = 0
 
     def next_id() -> int:
+        """Increment and return the next message ID."""
         nonlocal current_id
         current_id += 1
         return current_id
@@ -294,6 +299,7 @@ async def get_hass_info(token: str, uri: str) -> HomeAssistantInfo:
                 if exposed_info.get("conversation"):
                     entity_ids.append(entity_id)
 
+            # Get entity states
             await websocket.send_json(
                 {
                     "id": next_id(),
@@ -303,14 +309,6 @@ async def get_hass_info(token: str, uri: str) -> HomeAssistantInfo:
             msg = await websocket.receive_json()
             assert msg["success"], msg
             states = {s["entity_id"]: s for s in msg["result"]}
-
-            # Get device info
-            # await websocket.send_json(
-            #     {"id": next_id(), "type": "config/device_registry/list"}
-            # )
-            # msg = await websocket.receive_json()
-            # assert msg["success"], msg
-            # devices = {device_info["id"]: device_info for device_info in msg["result"]}
 
             # Floors
             await websocket.send_json(
@@ -324,7 +322,9 @@ async def get_hass_info(token: str, uri: str) -> HomeAssistantInfo:
             for floor_info in floors.values():
                 names = [floor_info["name"]]
                 names.extend(floor_info.get("aliases", []))
-                things.floors.append(Floor(names=[name.strip() for name in names]))
+                things.floors.append(
+                    Floor(names=[name.strip() for name in names])
+                )
 
             # Areas
             await websocket.send_json(
@@ -336,11 +336,11 @@ async def get_hass_info(token: str, uri: str) -> HomeAssistantInfo:
             for area_info in areas.values():
                 names = [area_info["name"]]
                 names.extend(area_info.get("aliases", []))
-                things.areas.append(Area(names=[name.strip() for name in names]))
+                things.areas.append(
+                    Area(names=[name.strip() for name in names])
+                )
 
-            # Contains aliases
-            # Check area_id as well as area of device_id
-            # Use original_device_class
+            # Get entity registry entries for exposed entities
             await websocket.send_json(
                 {
                     "id": next_id(),
@@ -374,7 +374,7 @@ async def get_hass_info(token: str, uri: str) -> HomeAssistantInfo:
 
                 supported_features = attributes.get("supported_features", 0)
 
-                # Domain-specific features
+                # Domain-specific features initialization
                 light_supports_color: Optional[bool] = None
                 light_supports_brightness: Optional[bool] = None
                 fan_supports_speed: Optional[bool] = None
@@ -422,7 +422,7 @@ async def get_hass_info(token: str, uri: str) -> HomeAssistantInfo:
                     )
                 )
 
-            # Get sentences from sentence triggers
+            # Get sentences from conversation sentence triggers
             await websocket.send_json(
                 {"id": next_id(), "type": "conversation/sentences/list"}
             )
@@ -430,7 +430,7 @@ async def get_hass_info(token: str, uri: str) -> HomeAssistantInfo:
             if msg["success"]:
                 things.extra_sentences.extend(set(msg["result"]["trigger_sentences"]))
 
-            # Get ask_question answers
+            # Get ask_question answers from automations/scripts
             for entity_id, state in states.items():
                 domain = entity_id.split(".", maxsplit=1)[0]
                 if domain not in ("automation", "script"):
@@ -467,7 +467,7 @@ async def get_hass_info(token: str, uri: str) -> HomeAssistantInfo:
 
 
 def _find_ask_question_answers(item: Any) -> Generator[str]:
-    """Yields answer sentences from automation or script config for ask_question."""
+    """Yields answer sentences from automation or script config for ask_question action."""
     if isinstance(item, dict):
         if item.get("action") == "assist_satellite.ask_question":
             for answer in item.get("data", {}).get("answers", []):
