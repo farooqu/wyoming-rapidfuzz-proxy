@@ -5,8 +5,8 @@ from functools import partial
 from wyoming.info import AsrModel, AsrProgram, Attribution, Info
 from wyoming.server import AsyncServer
 from wyoming.info import Info
-from wyoming.client import AsyncClient
-from .sentences import load_sentences_for_language
+# Se elimina AsyncClient de aquí, ya no es necesario
+from .sentences import load_sentences_for_language, LanguageConfig
 from .handler import STTProxyEventHandler
 
 _LOGGER = logging.getLogger()
@@ -32,6 +32,24 @@ async def main() -> None:
         default="/data",
         help="Directory to store definition file and databases with sentences",
     )
+    
+    # --- INICIO DE CAMBIOS ---
+    
+    # Argumentos añadidos para la conexión con Home Assistant
+    parser.add_argument(
+        "--hass-uri",
+        # Se elimina el valor 'default'
+        required=True, # <--- CAMBIO: Se hace obligatorio
+        help="Home Assistant websocket URI (ws://...)"
+    )
+    parser.add_argument(
+        "--hass-token",
+        required=True,
+        help="Home Assistant long-lived access token"
+    )
+
+    # --- FIN DE CAMBIOS ---
+    
     parser.add_argument(
         "--correction-threshold",
         nargs="?",
@@ -90,16 +108,30 @@ async def main() -> None:
             )
         ],
     )
-    _LOGGER.info(cli_args.data_dir + " - " + cli_args.data_dir)
-    load_sentences_for_language(cli_args.data_dir, cli_args.language, cli_args.data_dir)
-    stt_client = AsyncClient.from_uri(cli_args.stt_uri)
+    
+    _LOGGER.info("Loading sentences and connecting to Home Assistant...")
+    # Se cargan las frases UNA SOLA VEZ al inicio.
+    lang_config = await load_sentences_for_language(
+        sentences_dir=cli_args.data_dir,
+        language=cli_args.language,
+        hass_uri=cli_args.hass_uri,
+        hass_token=cli_args.hass_token,
+    )
+    
+    if lang_config:
+        _LOGGER.info(f"Loaded {len(lang_config.sentences)} sentences for language '{cli_args.language}'")
+    else:
+        _LOGGER.warning(f"Could not load sentences for language '{cli_args.language}'. Correction will be disabled.")
+
+    # Se elimina la creación de stt_client
     server = AsyncServer.from_uri(cli_args.uri)
 
     _LOGGER.info("Ready")
 
     try:
+        # Se pasa el objeto lang_config (con las frases en memoria) al manejador.
         await server.run(
-            partial(STTProxyEventHandler, wyoming_info, stt_client, cli_args)
+            partial(STTProxyEventHandler, wyoming_info, cli_args.stt_uri, cli_args, lang_config)
         )
     except KeyboardInterrupt:
         pass

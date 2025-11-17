@@ -2,13 +2,16 @@ import argparse
 import itertools
 import logging
 import re
-import sqlite3
+# import sqlite3 # <--- CAMBIO: Ya no se usa SQLite
 import time
 from collections import abc
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Set, Tuple, Union
+import asyncio
+# import json # <--- CAMBIO: Ya no se usa json
+from .hass_api import get_hass_info
 
 if TYPE_CHECKING:
     from hassil.expression import Expression, Sentence
@@ -19,36 +22,30 @@ _LOGGER = logging.getLogger()
 
 @dataclass
 class LanguageConfig:
-    sentences_mtime_ns: int
-    sentences_file_size: int
-    database_path: Path
+    # <--- CAMBIO: Se eliminan los campos de mtime, size y database_path
+    # Se añade un campo para almacenar las frases en memoria.
+    sentences: List[Tuple[str, str]] = field(default_factory=list)
     no_correct_patterns: List[re.Pattern] = field(default_factory=list)
     unknown_text: Optional[str] = None
 
 
-# language -> config
-_CONFIG_CACHE: Dict[str, LanguageConfig] = {}
+# <--- CAMBIO: Se elimina _CONFIG_CACHE. El cacheo ahora lo maneja __main__.py
+# al llamar la función una sola vez.
 
 
-def load_sentences_for_language(
-    sentences_dir: Union[str, Path], language: str, database_dir: Union[str, Path]
+async def load_sentences_for_language(
+    sentences_dir: Union[str, Path],
+    language: str,
+    hass_uri: str,      # <--- CAMBIO: Se añade hass_uri
+    hass_token: str,    # <--- CAMBIO: Se añade hass_token
 ) -> Optional[LanguageConfig]:
     """Load YAML file for language with sentence templates."""
     sentences_path = Path(sentences_dir) / f"{language}.yaml"
     if not sentences_path.is_file():
+        _LOGGER.warning("Sentences file not found: %s", sentences_path)
         return None
 
-    sentences_stats = sentences_path.stat()
-    config = _CONFIG_CACHE.get(language)
-
-    # We will reload if the file modification time or size has changed
-    if (
-        (config is not None)
-        and (sentences_stats.st_mtime_ns == config.sentences_mtime_ns)
-        and (sentences_stats.st_size == config.sentences_file_size)
-    ):
-        # Cache hit
-        return config
+    # <--- CAMBIO: Se elimina toda la lógica de cache (st_mtime_ns, etc.)
 
     try:
         import yaml
@@ -66,17 +63,91 @@ def load_sentences_for_language(
         if not sentences_yaml.get("sentences"):
             _LOGGER.warning("No sentences in %s", sentences_path)
             return None
+            
+    # <--- CAMBIO: Se eliminan las variables TOKEN y WS_URI hardcodeadas
+    
+    # ---------------------------------------------------------------------
+    # Obtener info de Home Assistant sin bloquear el loop
+    # ---------------------------------------------------------------------
+    _LOGGER.debug("Fetching Home Assistant info from %s...", hass_uri)
+    try:
+        info = await get_hass_info(hass_token, hass_uri)
+        _LOGGER.debug("Got Home Assistant info.")
+    except Exception as e:
+        _LOGGER.error("Failed to get Home Assistant info: %s", e)
+        # Se puede decidir si fallar o continuar sin la info de HA.
+        # Por ahora, continuamos sin ella.
+        info = None
 
-    database_dir = Path(database_dir)
-    database_dir.mkdir(parents=True, exist_ok=True)
-    database_path = database_dir / f"{language}.db"
+    # Merge sentences yaml with Home Assistant Instance things
+    if info:
+        grouped_things = {
+            "entities": {},
+            "areas": [],
+            "floors": [],
+            "extra_sentences": []
+        }
 
-    # Continue loading
-    config = LanguageConfig(
-        sentences_mtime_ns=sentences_stats.st_mtime_ns,
-        sentences_file_size=sentences_stats.st_size,
-        database_path=database_path,
-    )
+        # ENTITIES
+        entities = [e for e in info.things.entities if e.names]
+        for e in entities:
+            domain = e.domain
+            if not domain:
+                continue
+
+            if domain not in grouped_things["entities"]:
+                grouped_things["entities"][domain] = []
+
+            for name in e.names:
+                if name and name not in grouped_things["entities"][domain]:
+                    grouped_things["entities"][domain].append(name)
+
+        grouped_things["entities"] = {
+            d: lst for d, lst in grouped_things["entities"].items() if lst
+        }
+
+        # AREAS
+        for a in info.things.areas:
+            for name in a.names or []:
+                if name and name not in grouped_things["areas"]:
+                    grouped_things["areas"].append(name)
+
+        # FLOORS
+        for f in info.things.floors:
+            for name in f.names or []:
+                if name and name not in grouped_things["floors"]:
+                    grouped_things["floors"].append(name)
+
+        # EXTRA SENTENCES
+        for s in info.things.extra_sentences:
+            if s and s not in grouped_things["extra_sentences"]:
+                grouped_things["extra_sentences"].append(s)
+
+        # Asegurarse de que 'lists' existe
+        if "lists" not in sentences_yaml:
+            sentences_yaml["lists"] = {}
+
+        # Poblar las listas desde HA
+        sentences_yaml["lists"]["light"] = grouped_things["entities"].get("light", [])
+        sentences_yaml["lists"]["media_player"] = grouped_things["entities"].get("media_player", [])
+        sentences_yaml["lists"]["scene"] = grouped_things["entities"].get("scene", [])
+        sentences_yaml["lists"]["switch"] = grouped_things["entities"].get("switch", [])
+        sentences_yaml["lists"]["climate"] = grouped_things["entities"].get("climate", [])
+        sentences_yaml["lists"]["vacuum"] = grouped_things["entities"].get("vacuum", [])
+        sentences_yaml["lists"]["area"] = grouped_things["areas"]
+        sentences_yaml["lists"]["areas"] = grouped_things["areas"]
+        
+        # Agregar al nodo root "sentences"
+        sentences_yaml.setdefault("sentences", [])
+        sentences_yaml["sentences"].extend(grouped_things["extra_sentences"])
+    else:
+        _LOGGER.warning("Skipping Home Assistant entity loading.")
+
+
+    # <--- CAMBIO: Se elimina la lógica de la base de datos
+    
+    # Crear el objeto de configuración
+    config = LanguageConfig()
 
     # Load "no correct" patterns
     no_correct_patterns = sentences_yaml.get("no_correct_patterns", [])
@@ -86,28 +157,15 @@ def load_sentences_for_language(
     # Load text to use for unknown sentences
     config.unknown_text = sentences_yaml.get("unknown_text")
 
-    # Remove existing database
-    database_path.unlink(missing_ok=True)
-
-    # Create new database
-    db_conn = sqlite3.connect(str(database_path))
-    with db_conn:
-        db_conn.execute(
-            "CREATE TABLE sentences "
-            + "(id INTEGER PRIMARY KEY AUTOINCREMENT, input_text TEXT, output_text TEXT);"
-        )
-        db_conn.execute(
-            "CREATE TABLE words " + "(id INTEGER PRIMARY KEY AUTOINCREMENT, word TEXT);"
-        )
-        db_conn.commit()
-        generate_sentences(sentences_yaml, db_conn)
-
-    _CONFIG_CACHE[language] = config
+    # <--- CAMBIO: Se elimina la creación de la base de datos
+    # En lugar de eso, se generan las frases en memoria.
+    
+    generate_sentences(sentences_yaml, config) # Se pasa el config
 
     return config
 
 
-def generate_sentences(sentences_yaml: Dict[str, Any], db_conn: sqlite3.Connection):
+def generate_sentences(sentences_yaml: Dict[str, Any], config: LanguageConfig): # <--- CAMBIO: Recibe config
     try:
         import hassil.parse_expression
         import hassil.sample
@@ -117,20 +175,6 @@ def generate_sentences(sentences_yaml: Dict[str, Any], db_conn: sqlite3.Connecti
 
     start_time = time.monotonic()
 
-    # sentences:
-    #   - same text in and out
-    #   - in: text in
-    #     out: different text out
-    #   - in:
-    #       - multiple text
-    #       - multiple text in
-    #     out: different text out
-    # lists:
-    #   <name>:
-    #     - value 1
-    #     - value 2
-    # expansion_rules:
-    #   <name>: sentence template
     templates = sentences_yaml["sentences"]
 
     # Load slot lists
@@ -152,8 +196,6 @@ def generate_sentences(sentences_yaml: Dict[str, Any], db_conn: sqlite3.Connecti
                 values_in.append(slot_value)
                 value_out: str = slot_value
             else:
-                # - in: text to say
-                #   out: text to output
                 value_in = slot_value["in"]
                 value_out = slot_value["out"]
 
@@ -171,7 +213,7 @@ def generate_sentences(sentences_yaml: Dict[str, Any], db_conn: sqlite3.Connecti
                     TextSlotValue(TextChunk(value_in), value_out=value_out)
                 )
 
-        slot_lists[slot_name] = TextSlotList("name",slot_list_values)
+        slot_lists[slot_name] = TextSlotList("name", slot_list_values)
 
     # Load expansion rules
     expansion_rules: Dict[str, hassil.Sentence] = {}
@@ -180,7 +222,8 @@ def generate_sentences(sentences_yaml: Dict[str, Any], db_conn: sqlite3.Connecti
 
     # Generate possible sentences
     num_sentences = 0
-    words: Set[str] = set()
+    # <--- CAMBIO: Se elimina el set 'words'.
+    
     for template in templates:
         if isinstance(template, str):
             input_templates: List[str] = [template]
@@ -188,17 +231,14 @@ def generate_sentences(sentences_yaml: Dict[str, Any], db_conn: sqlite3.Connecti
         else:
             input_str_or_list = template["in"]
             if isinstance(input_str_or_list, str):
-                # One template
                 input_templates = [input_str_or_list]
             else:
-                # Multiple templates
                 input_templates = input_str_or_list
 
             output_text = template.get("out")
 
         for input_template in input_templates:
             if hassil.intents.is_template(input_template):
-                # Generate possible texts
                 input_expression = hassil.parse_expression.parse_sentence(
                     input_template
                 )
@@ -207,37 +247,27 @@ def generate_sentences(sentences_yaml: Dict[str, Any], db_conn: sqlite3.Connecti
                     slot_lists=slot_lists,
                     expansion_rules=expansion_rules,
                 ):
-                    db_conn.execute(
-                        "INSERT INTO sentences (input_text, output_text) VALUES (?, ?)",
-                        (input_text, output_text or maybe_output_text or input_text),
+                    # <--- CAMBIO: Se añade a la lista en memoria en lugar de a la BD
+                    config.sentences.append(
+                        (input_text, output_text or maybe_output_text or input_text)
                     )
-                    words.update(w.strip() for w in input_text.split())
                     num_sentences += 1
             else:
-                # Not a template
-                db_conn.execute(
-                    "INSERT INTO sentences (input_text, output_text) VALUES (?, ?)",
-                    (input_template, output_text or input_template),
+                # <--- CAMBIO: Se añade a la lista en memoria en lugar de a la BD
+                config.sentences.append(
+                    (input_template, output_text or input_template)
                 )
-                words.update(w.strip() for w in input_template.split())
                 num_sentences += 1
 
-        db_conn.commit()
+        # <--- CAMBIO: Se elimina db_conn.commit()
 
-    # Add words
-    for word in words:
-        db_conn.execute(
-            "INSERT INTO words (word) VALUES (?)",
-            (word,),
-        )
+    # <--- CAMBIO: Se elimina la inserción de 'words' a la BD
 
-    db_conn.commit()
     end_time = time.monotonic()
 
     _LOGGER.info(
-        "Generated %s sentence(s) with %s unique word(s) in %0.2f second(s)",
+        "Generated %s sentence(s) in %0.2f second(s)", # <--- CAMBIO: Se quita 'words'
         num_sentences,
-        len(words),
         end_time - start_time,
     )
 
@@ -256,7 +286,7 @@ def sample_expression_with_output(
         TextChunk,
     )
     from hassil.intents import TextSlotList
-    from hassil.errors   import MissingListError, MissingRuleError
+    from hassil.errors import MissingListError, MissingRuleError
     from hassil.util import normalize_whitespace
 
     if isinstance(expression, TextChunk):
@@ -351,10 +381,11 @@ def correct_sentence(
     text: str, config: LanguageConfig, score_cutoff: float = 0.0
 ) -> str:
     """Correct a sentence using rapidfuzz."""
-    if not config.database_path.is_file():
-        # Can't correct without a database
+    # <--- CAMBIO: Se comprueba la lista en memoria, no el archivo de BD
+    if not config.sentences:
+        # Can't correct without sentences
         return text
-    
+
     # Nothing to correct
     if not text:
         _LOGGER.debug("Empty transcript")
@@ -365,53 +396,83 @@ def correct_sentence(
         if pattern.match(text):
             return text
 
-    with sqlite3.connect(str(config.database_path)) as db_conn:
-        try:
-            from rapidfuzz.distance import Levenshtein
-            from rapidfuzz.process import extractOne
-        except ImportError as exc:
-            raise Exception("pip3 install wyoming-vosk[limited]") from exc
+    # <--- CAMBIO: Se elimina la conexión a SQLite
+    
+    try:
+        from rapidfuzz.distance import Levenshtein
+        from rapidfuzz.process import extractOne
+    except ImportError as exc:
+        raise Exception("pip3 install wyoming-vosk[limited]") from exc
 
-        cursor = db_conn.execute("SELECT input_text, output_text from sentences")
-        result = extractOne(
-            [text],  # critical that this is a list
-            cursor,
-            processor=lambda s: s[0],
-            scorer=Levenshtein.distance,
-            scorer_kwargs={"weights": (1, 1, 3)},
-        )
-        fixed_row, score = result[0], result[1]
+    # <--- CAMBIO: La búsqueda se hace en la lista en memoria (config.sentences)
+    # que es mucho más rápida y segura.
+    result = extractOne(
+        [text],  # critical that this is a list
+        config.sentences, # <--- Se usa la lista en memoria
+        processor=lambda s: s[0], # s es ahora (input_text, output_text)
+        scorer=Levenshtein.distance,
+        scorer_kwargs={"weights": (1, 1, 3)},
+    )
+    
+    if not result:
+        # No se encontró ninguna coincidencia (lista de frases vacía)
+        return text
 
-        final_text = text
-        score_pct = score / len(text)
+    fixed_row, score = result[0], result[1]
 
-        if (score_cutoff <= 0) or (score <= score_cutoff):
-            # Map to output text
-            final_text = fixed_row[1]
+    final_text = text
+    score_pct = score / len(text) if len(text) > 0 else 0
 
-        if (score > score_cutoff):
-            _LOGGER.warning("Sentence not recognized: %s", final_text)
+    if (score_cutoff <= 0) or (score <= score_cutoff):
+        # Map to output text
+        final_text = fixed_row[1] # fixed_row es (input, output), queremos output
 
-        _LOGGER.debug(
-            "score=%s/%s, scorepct=%.2f%%, original=%s, final=%s", score, score_cutoff, score_pct*100, text, final_text
-        )
+    if (score > score_cutoff):
+        _LOGGER.warning("Sentence not recognized: %s", final_text)
 
-        return final_text
+    _LOGGER.debug(
+        "score=%s/%s, scorepct=%.2f%%, original=%s, final=%s", score, score_cutoff, score_pct * 100, text, final_text
+    )
+
+    return final_text
 
 
 # -----------------------------------------------------------------------------
 
 
-def main() -> None:
+async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sentences-dir", required=True)
     parser.add_argument("--language", required=True)
-    parser.add_argument("--database-dir", required=True)
+    
+    # --- INICIO DE CAMBIOS ---
+    
+    # <--- CAMBIO: Argumentos de HASS añadidos para poder ejecutar este script
+    parser.add_argument(
+        "--hass-uri",
+        # Se elimina el valor 'default'
+        required=True, # <--- CAMBIO: Se hace obligatorio
+        help="Home Assistant websocket URI (ws://...)"
+    )
+    parser.add_argument(
+        "--hass-token",
+        required=True,
+        help="Home Assistant long-lived access token"
+    )
+    
+    # --- FIN DE CAMBIOS ---
+    
     args = parser.parse_args()
     logging.basicConfig(level=logging.DEBUG)
 
-    load_sentences_for_language(args.sentences_dir, args.language, args.database_dir)
+    # <--- CAMBIO: Se pasan los nuevos argumentos
+    await load_sentences_for_language(
+        args.sentences_dir,
+        args.language,
+        args.hass_uri,
+        args.hass_token
+    )
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

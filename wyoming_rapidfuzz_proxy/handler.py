@@ -4,13 +4,18 @@ from wyoming.audio import AudioChunk, AudioStop, AudioStart
 from wyoming.event import Event
 from wyoming.info import Describe, Info
 from wyoming.server import AsyncEventHandler
-from wyoming.asr import Transcribe, Transcript
-from wyoming.audio import AudioStop
-from wyoming.info import Describe, Info
-from wyoming.event import Event
-from .sentences import load_sentences_for_language, correct_sentence
+from wyoming.client import AsyncClient
+from .sentences import load_sentences_for_language, correct_sentence, LanguageConfig
+from typing import Optional
 
 _LOGGER = logging.getLogger()
+
+# NOTE: UNK_FOR_MODEL and _DEFAULT_UNK are missing in the provided context
+# For now, we will define a placeholder for _DEFAULT_UNK to allow _has_unknown to run.
+# A proper fix would require knowing the source model or language configuration.
+_DEFAULT_UNK = "<unk>"  # Placeholder
+UNK_FOR_MODEL = {}  # Placeholder
+
 
 class STTProxyEventHandler(AsyncEventHandler):
     """Event handler for clients."""
@@ -18,16 +23,19 @@ class STTProxyEventHandler(AsyncEventHandler):
     def __init__(
         self,
         wyoming_info: Info,
-        stt_clientt,
+        stt_uri: str,
         cli_args,
+        lang_config: Optional[LanguageConfig], # <--- CAMBIO: Recibe el config pre-cargado
         *args,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
 
         self.wyoming_info_event = wyoming_info.event()
-        self.stt_clientt = stt_clientt
+        self.stt_clientt = AsyncClient.from_uri(stt_uri)
         self.cli_args = cli_args
+        self.lang_config = lang_config # <--- CAMBIO: Almacena el config
+        self.model_name = "default"
 
     async def handle_event(self, event: Event) -> bool:
         if AudioChunk.is_type(event.type):
@@ -51,6 +59,7 @@ class STTProxyEventHandler(AsyncEventHandler):
                     original_text = text
 
                     if self.cli_args.correction_threshold is not None:
+                        # <--- CAMBIO: Llama a fix_transcript (que ahora es síncrono)
                         text = self.fix_transcript(original_text)
                         if text != original_text:
                             _LOGGER.info(
@@ -84,14 +93,13 @@ class STTProxyEventHandler(AsyncEventHandler):
                     return True
         return True
 
+    # <--- CAMBIO: Ya no es 'async'
     def fix_transcript(self, text: str) -> str:
         """Corrects a transcript using user-provided sentences."""
-        assert self.cli_args.language, "Language not set"
-        lang_config = load_sentences_for_language(
-            self.cli_args.data_dir,
-            self.cli_args.language,
-            self.cli_args.data_dir,
-        )
+        
+        # <--- CAMBIO: Ya no llama a load_sentences_for_language.
+        # Usa el objeto lang_config que se pasó en el __init__.
+        lang_config = self.lang_config
 
         if self.cli_args.allow_unknown and self._has_unknown(text):
             if lang_config is not None:
@@ -103,6 +111,7 @@ class STTProxyEventHandler(AsyncEventHandler):
             # Can't fix
             return text
 
+        # <--- CAMBIO: La corrección ahora es síncrona y usa los datos en memoria.
         return correct_sentence(
             text, lang_config, score_cutoff=self.cli_args.correction_threshold
         )
