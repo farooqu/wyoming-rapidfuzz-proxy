@@ -42,6 +42,8 @@ class STTProxyEventHandler(AsyncEventHandler):
         if AudioChunk.is_type(event.type):
             # Pass audio chunk to the underlying STT service
             await self.stt_clientt.write_event(event)
+            # La llamada a `await self.stt_clientt.drain()` causó el error 'AttributeError',
+            # por lo que ha sido eliminada.
             return True
 
         if AudioStart.is_type(event.type):
