@@ -53,7 +53,7 @@ This project is a dedicated wrapper utilizing the RapidFuzz sentence correction 
 
 1.  **Clone the repository:**
     ```bash
-    git clone [https://github.com/Cheerpipe/wyoming_rapidfuzz_proxy](https://github.com/Cheerpipe/wyoming_rapidfuzz_proxy)
+    git clone https://github.com/Cheerpipe/wyoming_rapidfuzz_proxy
     cd wyoming_rapidfuzz_proxy
     ```
 2.  **Build the container image:**
