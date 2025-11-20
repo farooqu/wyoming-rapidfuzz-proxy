@@ -24,7 +24,7 @@ MEDIA_PLAYER_NEXT_TRACK = 32
 
 
 @dataclass
-class Entity:
+class Entity:  # pylint: disable=too-many-instance-attributes
     """Home Assistant entity representation."""
 
     names: List[str]
@@ -237,6 +237,7 @@ class HomeAssistantInfo:
     pipeline_languages: Set[str] = field(default_factory=set)
 
 
+# pylint: disable=too-many-locals,too-many-branches,too-many-statements
 async def get_hass_info(token: str, uri: str) -> HomeAssistantInfo:
     """Use HA websocket API to get exposed entities, areas, and floors."""
     things = Things()

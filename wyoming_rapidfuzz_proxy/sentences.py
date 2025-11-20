@@ -1,3 +1,4 @@
+"""Sentence template loading and RapidFuzz-based correction."""
 import argparse
 import itertools
 import logging
@@ -7,7 +8,7 @@ from collections import abc
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, Union
 import asyncio
 from .hass_api import get_hass_info
 
@@ -30,6 +31,7 @@ class LanguageConfig:
     unknown_text: Optional[str] = None
 
 
+# pylint: disable=too-many-locals,too-many-branches,too-many-statements
 async def load_sentences_for_language(
     sentences_dir: Union[str, Path],
     language: str,
@@ -55,7 +57,7 @@ async def load_sentences_for_language(
     try:
         import yaml
     except ImportError as exc:
-        raise Exception("pip3 install wyoming-vosk[limited]") from exc
+        raise Exception("pip3 install wyoming-vosk[limited]") from exc  # pylint: disable=broad-exception-raised
 
     # Load and verify YAML
     _LOGGER.debug("Loading %s", sentences_path)
@@ -74,7 +76,7 @@ async def load_sentences_for_language(
     try:
         info = await get_hass_info(hass_token, hass_uri)
         _LOGGER.debug("Got Home Assistant info.")
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-exception-caught
         _LOGGER.error("Failed to get Home Assistant info: %s", e)
         # Continue without HA info if fetching fails
         info = None
@@ -164,6 +166,7 @@ async def load_sentences_for_language(
     return config
 
 
+# pylint: disable=too-many-locals,too-many-branches,too-many-statements
 def generate_sentences(sentences_yaml: Dict[str, Any], config: LanguageConfig):
     """Generate all possible sentences from templates and populate config."""
     try:
@@ -172,7 +175,7 @@ def generate_sentences(sentences_yaml: Dict[str, Any], config: LanguageConfig):
         from hassil.intents import SlotList, TextChunk, TextSlotList, TextSlotValue
         from hassil.parse_expression import Sentence
     except ImportError as exc:
-        raise Exception("pip3 install wyoming-vosk[limited]") from exc
+        raise Exception("pip3 install wyoming-vosk[limited]") from exc  # pylint: disable=broad-exception-raised
 
     start_time = time.monotonic()
 
@@ -286,6 +289,7 @@ def generate_sentences(sentences_yaml: Dict[str, Any], config: LanguageConfig):
     )
 
 
+# pylint: disable=too-many-locals,too-many-branches,too-many-nested-blocks
 def sample_expression_with_output(
     expression: "Expression",
     slot_lists: "Optional[Dict[str, SlotList]]" = None,
@@ -296,16 +300,16 @@ def sample_expression_with_output(
     This is a modified version of hassil.sample.sample_expression to also
     yield the output text for slot values.
     """
-    from hassil.expression import (
+    from hassil.expression import (  # pylint: disable=import-outside-toplevel
         ListReference,
         RuleReference,
         Sequence,
         Alternative,
         TextChunk,
     )
-    from hassil.intents import TextSlotList
-    from hassil.errors import MissingListError, MissingRuleError
-    from hassil.util import normalize_whitespace
+    from hassil.intents import TextSlotList  # pylint: disable=import-outside-toplevel
+    from hassil.errors import MissingListError, MissingRuleError  # pylint: disable=import-outside-toplevel
+    from hassil.util import normalize_whitespace  # pylint: disable=import-outside-toplevel
 
     if isinstance(expression, TextChunk):
         chunk: TextChunk = expression
@@ -422,7 +426,7 @@ def correct_sentence(
         from rapidfuzz.distance import Levenshtein
         from rapidfuzz.process import extractOne
     except ImportError as exc:
-        raise Exception("pip3 install wyoming-vosk[limited]") from exc
+        raise Exception("pip3 install wyoming-vosk[limited]") from exc  # pylint: disable=broad-exception-raised
 
     # Search in the in-memory list of generated sentences
     # processor=lambda s: s[0] uses the input_text part of the tuple for scoring
@@ -465,9 +469,11 @@ def correct_sentence(
 
 
 
+# pylint: disable=too-many-instance-attributes
 class SentenceManager:
     """Manages sentence loading and hot-reloading."""
 
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
     def __init__(
         self,
         sentences_dir: Union[str, Path],
@@ -514,7 +520,7 @@ class SentenceManager:
             try:
                 await asyncio.sleep(self.poll_interval)
                 await self._load_and_check()
-            except Exception:
+            except Exception:  # pylint: disable=broad-exception-caught
                 _LOGGER.exception("Error in sentence watcher loop")
 
     async def _load_and_check(self):
@@ -525,7 +531,7 @@ class SentenceManager:
 
         try:
             # Calculate hash
-            import hashlib
+            import hashlib  # pylint: disable=import-outside-toplevel
             async with self._lock:
                 # Read file content to calculate hash
                 # We do this in a thread to avoid blocking the loop for large files,
@@ -546,7 +552,7 @@ class SentenceManager:
                         self.config = new_config
                         self._file_hash = new_hash
                         _LOGGER.info("Sentences reloaded successfully.")
-        except Exception:
+        except Exception:  # pylint: disable=broad-exception-caught
             _LOGGER.exception("Failed to reload sentences")
 
 
@@ -579,7 +585,7 @@ async def main() -> None:
         args.hass_token
     )
     await manager.start()
-    
+
     try:
         while True:
             await asyncio.sleep(1)

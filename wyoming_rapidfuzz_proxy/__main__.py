@@ -1,10 +1,11 @@
+"""Wyoming RapidFuzz Proxy - STT correction layer using RapidFuzz."""
 import asyncio
 import argparse
 import logging
 from functools import partial
 from wyoming.info import AsrModel, AsrProgram, Attribution, Info
 from wyoming.server import AsyncServer
-from .sentences import load_sentences_for_language, LanguageConfig, SentenceManager
+from .sentences import SentenceManager
 from .handler import STTProxyEventHandler
 
 _LOGGER = logging.getLogger()
@@ -89,7 +90,10 @@ async def main() -> None:
         asr=[
             AsrProgram(
                 name="RapidFuzz STT proxy",
-                description="A speech recognition proxy to add a correction layer to any Wyoming STT",
+                description=(
+                    "A speech recognition proxy to add a correction layer "
+                    "to any Wyoming STT"
+                ),
                 attribution=Attribution(
                     name="Felipe Urzúa",
                     url="https://todo",
@@ -127,13 +131,15 @@ async def main() -> None:
     lang_config = sentence_manager.get_config()
     if lang_config:
         _LOGGER.info(
-            f"Loaded {len(lang_config.sentences)} sentences for language "
-            f"'{cli_args.language}'"
+            "Loaded %d sentences for language '%s'",
+            len(lang_config.sentences),
+            cli_args.language
         )
     else:
         _LOGGER.warning(
-            f"Could not load sentences for language '{cli_args.language}'. "
-            "Correction will be disabled."
+            "Could not load sentences for language '%s'. "
+            "Correction will be disabled.",
+            cli_args.language
         )
 
     # Initialize Wyoming server

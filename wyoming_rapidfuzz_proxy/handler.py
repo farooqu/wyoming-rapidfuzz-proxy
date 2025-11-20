@@ -1,6 +1,6 @@
+"""Wyoming RapidFuzz Proxy event handler for STT correction."""
 import asyncio
 import logging
-from typing import Optional
 
 from wyoming.asr import Transcribe, Transcript
 from wyoming.audio import AudioChunk, AudioStop, AudioStart
@@ -8,20 +8,7 @@ from wyoming.event import Event
 from wyoming.info import Describe, Info
 from wyoming.server import AsyncEventHandler
 from wyoming.client import AsyncClient
-from .sentences import correct_sentence, LanguageConfig
-
-_LOGGER = logging.getLogger()
-import asyncio
-import logging
-from typing import Optional
-
-from wyoming.asr import Transcribe, Transcript
-from wyoming.audio import AudioChunk, AudioStop, AudioStart
-from wyoming.event import Event
-from wyoming.info import Describe, Info
-from wyoming.server import AsyncEventHandler
-from wyoming.client import AsyncClient
-from .sentences import correct_sentence, LanguageConfig
+from .sentences import correct_sentence
 
 _LOGGER = logging.getLogger()
 
@@ -78,10 +65,11 @@ class STTProxyEventHandler(AsyncEventHandler):
                 await self.consumer_task
             except asyncio.CancelledError:
                 pass
-        
-        # We do not call __aexit__ here blindly because the loop manages the 
+
+        # We do not call __aexit__ here blindly because the loop manages the
         # connection lifecycle based on Wyoming protocol states.
 
+    # pylint: disable=too-many-nested-blocks,too-many-branches,too-many-statements
     async def _consumer_loop(self) -> None:
         """
         Background task to consume events from the queue and forward them to the STT service.
@@ -96,7 +84,7 @@ class STTProxyEventHandler(AsyncEventHandler):
                     # The Transcribe event marks the start of a new session.
                     # We must open the connection to the underlying STT service here.
                     await self.stt_clientt.__aenter__()
-                    
+
                     # Pass Transcribe event to the STT service
                     await self.stt_clientt.write_event(event)
                     transcribe = Transcribe.from_event(event)
@@ -149,7 +137,7 @@ class STTProxyEventHandler(AsyncEventHandler):
                     # Describe is a standalone request. Open, process, and close.
                     await self.stt_clientt.__aenter__()
                     await self.stt_clientt.write_event(event)
-                    
+
                     # Wait for Info event from STT service
                     while True:
                         return_event = await self.stt_clientt.read_event()
@@ -160,7 +148,7 @@ class STTProxyEventHandler(AsyncEventHandler):
                             )
                             await self.write_event(return_event)
                             _LOGGER.debug("Sent info")
-                            
+
                             # Close connection after info is sent
                             await self.stt_clientt.__aexit__(None, None, None)
                             break
@@ -173,14 +161,14 @@ class STTProxyEventHandler(AsyncEventHandler):
             # Attempt to close the STT client gracefully if it was left open
             try:
                 await self.stt_clientt.__aexit__(None, None, None)
-            except Exception:
+            except Exception:  # pylint: disable=broad-exception-caught
                 pass
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             _LOGGER.exception("Error in event consumer loop: %s", e)
             # If an error occurs, try to reset the connection state
             try:
-                 await self.stt_clientt.__aexit__(None, None, None)
-            except Exception:
+                await self.stt_clientt.__aexit__(None, None, None)
+            except Exception:  # pylint: disable=broad-exception-caught
                 pass
 
     def fix_transcript(self, text: str) -> str:
