@@ -464,6 +464,92 @@ def correct_sentence(
     return final_text
 
 
+
+class SentenceManager:
+    """Manages sentence loading and hot-reloading."""
+
+    def __init__(
+        self,
+        sentences_dir: Union[str, Path],
+        language: str,
+        hass_uri: str,
+        hass_token: str,
+        poll_interval: float = 1.0,
+    ):
+        self.sentences_dir = Path(sentences_dir)
+        self.language = language
+        self.hass_uri = hass_uri
+        self.hass_token = hass_token
+        self.poll_interval = poll_interval
+        self.config: Optional[LanguageConfig] = None
+        self._file_hash: Optional[str] = None
+        self._running = False
+        self._task: Optional[asyncio.Task] = None
+        self._lock = asyncio.Lock()
+
+    async def start(self):
+        """Start the watcher task."""
+        # Initial load
+        await self._load_and_check()
+        self._running = True
+        self._task = asyncio.create_task(self._watch_loop())
+
+    async def stop(self):
+        """Stop the watcher task."""
+        self._running = False
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+
+    def get_config(self) -> Optional[LanguageConfig]:
+        """Get the current language configuration."""
+        return self.config
+
+    async def _watch_loop(self):
+        """Poll for file changes."""
+        while self._running:
+            try:
+                await asyncio.sleep(self.poll_interval)
+                await self._load_and_check()
+            except Exception:
+                _LOGGER.exception("Error in sentence watcher loop")
+
+    async def _load_and_check(self):
+        """Check file hash and reload if changed."""
+        sentences_path = self.sentences_dir / f"{self.language}.yaml"
+        if not sentences_path.is_file():
+            return
+
+        try:
+            # Calculate hash
+            import hashlib
+            async with self._lock:
+                # Read file content to calculate hash
+                # We do this in a thread to avoid blocking the loop for large files,
+                # though for config files it's usually fine.
+                content = await asyncio.to_thread(sentences_path.read_bytes)
+                new_hash = hashlib.sha256(content).hexdigest()
+
+                if self._file_hash != new_hash:
+                    _LOGGER.info("Change detected in %s. Reloading...", sentences_path)
+                    # Reload config
+                    new_config = await load_sentences_for_language(
+                        self.sentences_dir,
+                        self.language,
+                        self.hass_uri,
+                        self.hass_token,
+                    )
+                    if new_config:
+                        self.config = new_config
+                        self._file_hash = new_hash
+                        _LOGGER.info("Sentences reloaded successfully.")
+        except Exception:
+            _LOGGER.exception("Failed to reload sentences")
+
+
 # -----------------------------------------------------------------------------
 
 
@@ -486,13 +572,23 @@ async def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.DEBUG)
 
-    await load_sentences_for_language(
+    manager = SentenceManager(
         args.sentences_dir,
         args.language,
         args.hass_uri,
         args.hass_token
     )
+    await manager.start()
+    
+    try:
+        while True:
+            await asyncio.sleep(1)
+    except KeyboardInterrupt:
+        await manager.stop()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

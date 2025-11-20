@@ -4,7 +4,7 @@ import logging
 from functools import partial
 from wyoming.info import AsrModel, AsrProgram, Attribution, Info
 from wyoming.server import AsyncServer
-from .sentences import load_sentences_for_language, LanguageConfig
+from .sentences import load_sentences_for_language, LanguageConfig, SentenceManager
 from .handler import STTProxyEventHandler
 
 _LOGGER = logging.getLogger()
@@ -113,15 +113,18 @@ async def main() -> None:
         ],
     )
 
+
     _LOGGER.info("Loading sentences and connecting to Home Assistant...")
-    # Load sentences once at startup and fetch HA entities
-    lang_config = await load_sentences_for_language(
+    # Initialize SentenceManager
+    sentence_manager = SentenceManager(
         sentences_dir=cli_args.data_dir,
         language=cli_args.language,
         hass_uri=cli_args.hass_uri,
         hass_token=cli_args.hass_token,
     )
+    await sentence_manager.start()
 
+    lang_config = sentence_manager.get_config()
     if lang_config:
         _LOGGER.info(
             f"Loaded {len(lang_config.sentences)} sentences for language "
@@ -146,11 +149,13 @@ async def main() -> None:
                 wyoming_info,
                 cli_args.stt_uri,
                 cli_args,
-                lang_config,
+                sentence_manager,
             )
         )
     except KeyboardInterrupt:
         pass
+    finally:
+        await sentence_manager.stop()
     _LOGGER.info("Terminating")
 
 

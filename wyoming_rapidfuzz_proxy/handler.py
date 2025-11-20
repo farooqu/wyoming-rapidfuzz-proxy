@@ -11,6 +11,19 @@ from wyoming.client import AsyncClient
 from .sentences import correct_sentence, LanguageConfig
 
 _LOGGER = logging.getLogger()
+import asyncio
+import logging
+from typing import Optional
+
+from wyoming.asr import Transcribe, Transcript
+from wyoming.audio import AudioChunk, AudioStop, AudioStart
+from wyoming.event import Event
+from wyoming.info import Describe, Info
+from wyoming.server import AsyncEventHandler
+from wyoming.client import AsyncClient
+from .sentences import correct_sentence, LanguageConfig
+
+_LOGGER = logging.getLogger()
 
 # Placeholders for unknown token handling.
 _DEFAULT_UNK = "<unk>"
@@ -25,7 +38,7 @@ class STTProxyEventHandler(AsyncEventHandler):
         wyoming_info: Info,
         stt_uri: str,
         cli_args,
-        lang_config: Optional[LanguageConfig],
+        sentence_manager,
         *args,
         **kwargs,
     ) -> None:
@@ -35,8 +48,8 @@ class STTProxyEventHandler(AsyncEventHandler):
         # Client for the underlying STT service
         self.stt_clientt = AsyncClient.from_uri(stt_uri)
         self.cli_args = cli_args
-        # Pre-loaded language configuration with sentences
-        self.lang_config = lang_config
+        # Manager for language configuration
+        self.sentence_manager = sentence_manager
         self.model_name = "default"
 
         # Initialize a bounded queue to control memory usage and provide backpressure
@@ -173,7 +186,7 @@ class STTProxyEventHandler(AsyncEventHandler):
     def fix_transcript(self, text: str) -> str:
         """Corrects a transcript using user-provided sentences (synchronous)."""
 
-        lang_config = self.lang_config
+        lang_config = self.sentence_manager.get_config()
 
         # Check for unknown words and handle based on CLI arg
         if self.cli_args.allow_unknown and self._has_unknown(text):
