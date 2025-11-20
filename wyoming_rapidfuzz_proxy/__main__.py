@@ -79,10 +79,13 @@ async def main() -> None:
 
     cli_args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.DEBUG if cli_args.debug else logging.INFO,
-        format=cli_args.log_format,
-    )
+    if cli_args.debug:
+        logging.basicConfig(level=logging.DEBUG)
+        _LOGGER.info("Log level: DEBUG")
+    else:
+        logging.basicConfig(level=logging.INFO)
+        _LOGGER.info("Log level: INFO")
+
     _LOGGER.debug(cli_args)
 
     # Define Wyoming service info

@@ -1,7 +1,7 @@
 """Wyoming RapidFuzz Proxy event handler for STT correction."""
 import asyncio
 import logging
-
+import time
 from wyoming.asr import Transcribe, Transcript
 from wyoming.audio import AudioChunk, AudioStop, AudioStart
 from wyoming.event import Event
@@ -39,9 +39,12 @@ class STTProxyEventHandler(AsyncEventHandler):
         self.sentence_manager = sentence_manager
         self.model_name = "default"
 
+        # Counter for audio bytes sent per session.
+        self.audio_bytes_sent = 0
+
         # Initialize a bounded queue to control memory usage and provide backpressure
         # to the client when the consumer cannot keep up with the incoming data rate.
-        self.queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=20)
+        self.queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=500)
 
         # Create a background task to consume and process events from the queue.
         self.consumer_task = asyncio.create_task(self._consumer_loop())
@@ -53,7 +56,20 @@ class STTProxyEventHandler(AsyncEventHandler):
         This method acts as the producer. If the queue is full, this coroutine
         will pause, effectively applying backpressure to the client connection.
         """
+        start_time = time.monotonic()
         await self.queue.put(event)
+        end_time = time.monotonic()
+        put_time = end_time - start_time
+
+        # If the wait time for 'put' is significant (e.g., > 0.01 seconds),
+        # it means the queue was full and backpressure was activated.
+        # Adjust the threshold (0.01) as needed.
+        if put_time > 0.01:
+             _LOGGER.warning(
+                 "Backpressure WARNING: Waited %.4f seconds to put event %s in queue (size: %d/%d)",
+                 put_time, event.type, self.queue.qsize(), self.queue.maxsize
+             )
+
         return True
 
     async def disconnect(self) -> None:
@@ -83,7 +99,18 @@ class STTProxyEventHandler(AsyncEventHandler):
                 if Transcribe.is_type(event.type):
                     # The Transcribe event marks the start of a new session.
                     # We must open the connection to the underlying STT service here.
+
+                    # Reset the byte counter at the start of a new session.
+                    self.audio_bytes_sent = 0
+
+                    _LOGGER.debug("Attempting to connect to STT service...")
+                    connect_start_time = time.monotonic()
                     await self.stt_clientt.__aenter__()
+                    connect_end_time = time.monotonic()
+                    _LOGGER.debug(
+                        "STT connection established in %.4f seconds.",
+                        connect_end_time - connect_start_time,
+                    )
 
                     # Pass Transcribe event to the STT service
                     await self.stt_clientt.write_event(event)
@@ -91,6 +118,10 @@ class STTProxyEventHandler(AsyncEventHandler):
                     _LOGGER.debug("Language set to %s", transcribe.language)
 
                 elif AudioChunk.is_type(event.type):
+                    # Count the audio bytes before sending them.
+                    chunk = AudioChunk.from_event(event)
+                    self.audio_bytes_sent += len(chunk.audio)
+
                     # Pass audio chunk to the underlying STT service
                     # Assumes connection was opened by a preceding Transcribe event.
                     await self.stt_clientt.write_event(event)
@@ -101,6 +132,13 @@ class STTProxyEventHandler(AsyncEventHandler):
 
                 elif AudioStop.is_type(event.type):
                     _LOGGER.debug("Audio stopped.")
+
+                    # Print the total amount of audio bytes sent.
+                    _LOGGER.debug(
+                        "Total audio bytes sent to backend: %.2f kB",
+                        self.audio_bytes_sent / 1024.0,
+                    )
+
                     await self.stt_clientt.write_event(event)
 
                     # Wait for the underlying STT service to return a transcript
@@ -135,7 +173,16 @@ class STTProxyEventHandler(AsyncEventHandler):
 
                 elif Describe.is_type(event.type):
                     # Describe is a standalone request. Open, process, and close.
+
+                    _LOGGER.debug("Attempting to connect to STT service for Describe...")
+                    connect_start_time = time.monotonic()
                     await self.stt_clientt.__aenter__()
+                    connect_end_time = time.monotonic()
+                    _LOGGER.debug(
+                        "STT connection for Describe established in %.4f seconds.",
+                        connect_end_time - connect_start_time,
+                    )
+
                     await self.stt_clientt.write_event(event)
 
                     # Wait for Info event from STT service

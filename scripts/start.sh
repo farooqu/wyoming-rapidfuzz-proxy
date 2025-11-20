@@ -43,3 +43,4 @@ python3 -m wyoming_rapidfuzz_proxy \
     --data-dir /data \
     --correction-threshold $CORRECTION_THRESHOLD \
     --language $LANGUAGE \
+    ${flags[@]}
