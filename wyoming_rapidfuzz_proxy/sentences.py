@@ -170,6 +170,7 @@ def generate_sentences(sentences_yaml: Dict[str, Any], config: LanguageConfig):
         import hassil.parse_expression
         import hassil.sample
         from hassil.intents import SlotList, TextChunk, TextSlotList, TextSlotValue
+        from hassil.parse_expression import Sentence
     except ImportError as exc:
         raise Exception("pip3 install wyoming-vosk[limited]") from exc
 
@@ -204,6 +205,9 @@ def generate_sentences(sentences_yaml: Dict[str, Any], config: LanguageConfig):
                     input_expression = hassil.parse_expression.parse_sentence(
                         value_in
                     )
+                    if isinstance(input_expression, Sentence):
+                        input_expression = input_expression.expression
+
                     for input_text in hassil.sample.sample_expression(
                         input_expression,
                     ):
@@ -223,9 +227,14 @@ def generate_sentences(sentences_yaml: Dict[str, Any], config: LanguageConfig):
     for rule_name, rule_text in sentences_yaml.get("expansion_rules", {}).items():
         # Ensure we use the correct parse function (Sentence is a type alias)
         import hassil.parse_expression
-        expansion_rules[rule_name] = hassil.parse_expression.parse_sentence(
+        
+        parsed_rule = hassil.parse_expression.parse_sentence(
             rule_text
         )
+        if isinstance(parsed_rule, Sentence):
+            parsed_rule = parsed_rule.expression
+
+        expansion_rules[rule_name] = parsed_rule
 
     # Generate possible sentences
     num_sentences = 0
@@ -248,6 +257,9 @@ def generate_sentences(sentences_yaml: Dict[str, Any], config: LanguageConfig):
                 input_expression = hassil.parse_expression.parse_sentence(
                     input_template
                 )
+                if isinstance(input_expression, Sentence):
+                    input_expression = input_expression.expression
+
                 for input_text, maybe_output_text in sample_expression_with_output(
                     input_expression,
                     slot_lists=slot_lists,
@@ -288,7 +300,7 @@ def sample_expression_with_output(
         ListReference,
         RuleReference,
         Sequence,
-        SequenceType,
+        Alternative,
         TextChunk,
     )
     from hassil.intents import TextSlotList
@@ -298,37 +310,36 @@ def sample_expression_with_output(
     if isinstance(expression, TextChunk):
         chunk: TextChunk = expression
         yield (chunk.original_text, chunk.original_text)
-    elif isinstance(expression, Sequence):
-        seq: Sequence = expression
-        if seq.type == SequenceType.ALTERNATIVE:
-            for item in seq.items:
-                yield from sample_expression_with_output(
-                    item,
-                    slot_lists,
-                    expansion_rules,
-                )
-        elif seq.type == SequenceType.GROUP:
-            # Recursively sample sub-expressions
-            seq_sentences = map(
-                partial(
-                    sample_expression_with_output,
-                    slot_lists=slot_lists,
-                    expansion_rules=expansion_rules,
-                ),
-                seq.items,
+    elif isinstance(expression, Alternative):
+        # Matches (a | b)
+        for item in expression.items:
+            yield from sample_expression_with_output(
+                item,
+                slot_lists,
+                expansion_rules,
             )
-            # Combine all possible samples from sub-expressions
-            sentence_texts = itertools.product(*seq_sentences)
-            for sentence_words in sentence_texts:
-                # Join input texts and output texts
-                yield (
-                    normalize_whitespace("".join(w[0] for w in sentence_words)),
-                    normalize_whitespace(
-                        "".join(w[1] for w in sentence_words if w[1] is not None)
-                    ),
-                )
-        else:
-            raise ValueError(f"Unexpected sequence type: {seq}")
+    elif isinstance(expression, Sequence):
+        # Matches a b
+        seq: Sequence = expression
+        # Recursively sample sub-expressions
+        seq_sentences = map(
+            partial(
+                sample_expression_with_output,
+                slot_lists=slot_lists,
+                expansion_rules=expansion_rules,
+            ),
+            seq.items,
+        )
+        # Combine all possible samples from sub-expressions
+        sentence_texts = itertools.product(*seq_sentences)
+        for sentence_words in sentence_texts:
+            # Join input texts and output texts
+            yield (
+                normalize_whitespace("".join(w[0] for w in sentence_words)),
+                normalize_whitespace(
+                    "".join(w[1] for w in sentence_words if w[1] is not None)
+                ),
+            )
     elif isinstance(expression, ListReference):
         # {list} reference
         list_ref: ListReference = expression
