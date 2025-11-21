@@ -114,3 +114,6 @@ The **CORRECTION\_THRESHOLD** variable sets the maximum acceptable Levenshtein d
 | **High (e.g., 20+)** | Forces a match even for severely misheard phrases. | Open-ended phrases not in your list may be incorrectly corrected to a pre-defined command. |
 
 **Recommendation:** A practical threshold should be set to a value that allows for correction of small errors without aggressively changing valid, yet uncommon, phrases. You should adjust this value based on the common length of entity and area names in your Home Assistant configuration.
+
+# Disclaimer
+This project was developed using extensive AI assistance for generating the final source code.
