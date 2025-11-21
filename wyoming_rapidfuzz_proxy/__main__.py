@@ -72,6 +72,12 @@ async def main() -> None:
         action="store_true",
         help="Return empty transcript when unknown words are spoken",
     )
+    parser.add_argument(
+        "--in-memory-db",
+        action="store_true",
+        default=True, 
+        help="Use in-memory SQLite database instead of file-based",
+    )
     parser.add_argument("--debug", action="store_true", help="Log DEBUG messages")
     parser.add_argument(
         "--log-format", default=logging.BASIC_FORMAT, help="Format for log messages"
@@ -128,14 +134,14 @@ async def main() -> None:
         language=cli_args.language,
         hass_uri=cli_args.hass_uri,
         hass_token=cli_args.hass_token,
+        in_memory_db=cli_args.in_memory_db,
     )
     await sentence_manager.start()
 
     lang_config = sentence_manager.get_config()
     if lang_config:
         _LOGGER.info(
-            "Loaded %d sentences for language '%s'",
-            len(lang_config.sentences),
+            "Loaded sentences for language '%s'",
             cli_args.language
         )
     else:

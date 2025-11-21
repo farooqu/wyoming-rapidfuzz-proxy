@@ -4,13 +4,17 @@ import itertools
 import logging
 import re
 import time
+import sqlite3
 from collections import abc
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, Union
 import asyncio
-from .hass_api import get_hass_info
+try:
+    from .hass_api import get_hass_info
+except ImportError:
+    from hass_api import get_hass_info
 
 if TYPE_CHECKING:
     from hassil.expression import Expression, Sentence
@@ -24,7 +28,8 @@ class LanguageConfig:
     """Language configuration and in-memory sentence storage."""
 
     # Stores generated sentences as (input_text, output_text) tuples.
-    sentences: List[Tuple[str, str]] = field(default_factory=list)
+    # sentences: List[Tuple[str, str]] = field(default_factory=list)
+    db_conn: sqlite3.Connection = field(default=None)
     # Regular expressions for transcripts that should not be corrected.
     no_correct_patterns: List[re.Pattern] = field(default_factory=list)
     # Text to return for unknown sentences if allow_unknown is enabled.
@@ -37,6 +42,7 @@ async def load_sentences_for_language(
     language: str,
     hass_uri: str,
     hass_token: str,
+    in_memory_db: bool = False,
 ) -> Optional[LanguageConfig]:
     """Load YAML file for language with sentence templates and HA entities.
 
@@ -150,7 +156,18 @@ async def load_sentences_for_language(
         _LOGGER.warning("Skipping Home Assistant entity loading.")
 
     # Create the configuration object
-    config = LanguageConfig()
+    if in_memory_db:
+        db_conn = sqlite3.connect(":memory:")
+    else:
+        db_path = Path(sentences_dir) / "sentences.db"
+        db_conn = sqlite3.connect(str(db_path))
+    
+    # Create FTS5 table
+    db_conn.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS sentences USING fts5(input_text, output_text, tokenize='trigram')"
+    )
+
+    config = LanguageConfig(db_conn=db_conn)
 
     # Load "no correct" patterns
     no_correct_patterns = sentences_yaml.get("no_correct_patterns", [])
@@ -241,6 +258,11 @@ def generate_sentences(sentences_yaml: Dict[str, Any], config: LanguageConfig):
 
     # Generate possible sentences
     num_sentences = 0
+    batch_size = 1000
+    batch = []
+    
+    # Clear existing data if any (important for file-based DB reload)
+    config.db_conn.execute("DELETE FROM sentences")
 
     for template in templates:
         if isinstance(template, str):
@@ -268,17 +290,32 @@ def generate_sentences(sentences_yaml: Dict[str, Any], config: LanguageConfig):
                     slot_lists=slot_lists,
                     expansion_rules=expansion_rules,
                 ):
-                    # Add generated sentence to in-memory list
-                    config.sentences.append(
+                    # Add generated sentence to batch
+                    batch.append(
                         (input_text, output_text or maybe_output_text or input_text)
                     )
                     num_sentences += 1
             else:
                 # Direct sentence (no template)
-                config.sentences.append(
+                batch.append(
                     (input_template, output_text or input_template)
                 )
                 num_sentences += 1
+            
+            if len(batch) >= batch_size:
+                config.db_conn.executemany(
+                    "INSERT INTO sentences (input_text, output_text) VALUES (?, ?)",
+                    batch
+                )
+                batch = []
+
+    if batch:
+        config.db_conn.executemany(
+            "INSERT INTO sentences (input_text, output_text) VALUES (?, ?)",
+            batch
+        )
+    
+    config.db_conn.commit()
 
     end_time = time.monotonic()
 
@@ -403,13 +440,20 @@ def sample_expression_with_output(
         raise ValueError(f"Unexpected expression: {expression}")
 
 
+def make_trigrams(text: str) -> List[str]:
+    """Generate trigrams from text."""
+    if len(text) < 3:
+        return [text]
+    return [text[i : i + 3] for i in range(len(text) - 2)]
+
+
 def correct_sentence(
     text: str, config: LanguageConfig, score_cutoff: float = 0.0
 ) -> str:
     """Correct a sentence using rapidfuzz based on generated sentences."""
 
-    if not config.sentences:
-        # Can't correct without sentences
+    if not config.db_conn:
+        # Can't correct without database
         return text
 
     # Nothing to correct
@@ -428,11 +472,30 @@ def correct_sentence(
     except ImportError as exc:
         raise Exception("pip3 install wyoming-vosk[limited]") from exc  # pylint: disable=broad-exception-raised
 
-    # Search in the in-memory list of generated sentences
+    # Search in SQLite FTS5 first
+    # Generate trigrams for the input text
+    trigrams = make_trigrams(text)
+    # Escape double quotes in trigrams
+    safe_trigrams = [t.replace('"', '""') for t in trigrams]
+    # Construct OR query
+    query = " OR ".join(f'"{t}"' for t in safe_trigrams)
+    
+    # Get top 50 candidates using trigram matching
+    # We select input_text and output_text
+    cursor = config.db_conn.execute(
+        f"SELECT input_text, output_text FROM sentences WHERE input_text MATCH ? ORDER BY rank LIMIT 50",
+        (query,)
+    )
+    candidates = list(cursor.fetchall())
+
+    if not candidates:
+        return text
+
+    # Search in the candidates list
     # processor=lambda s: s[0] uses the input_text part of the tuple for scoring
     result = extractOne(
         [text],  # critical that this is a list
-        config.sentences,
+        candidates,
         processor=lambda s: s[0],  # s is (input_text, output_text)
         scorer=Levenshtein.distance,
         scorer_kwargs={"weights": (1, 1, 3)},
@@ -481,12 +544,14 @@ class SentenceManager:
         hass_uri: str,
         hass_token: str,
         poll_interval: float = 1.0,
+        in_memory_db: bool = False,
     ):
         self.sentences_dir = Path(sentences_dir)
         self.language = language
         self.hass_uri = hass_uri
         self.hass_token = hass_token
         self.poll_interval = poll_interval
+        self.in_memory_db = in_memory_db
         self.config: Optional[LanguageConfig] = None
         self._file_hash: Optional[str] = None
         self._running = False
@@ -547,6 +612,7 @@ class SentenceManager:
                         self.language,
                         self.hass_uri,
                         self.hass_token,
+                        self.in_memory_db,
                     )
                     if new_config:
                         self.config = new_config

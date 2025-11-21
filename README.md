@@ -60,6 +60,8 @@ This project is a dedicated wrapper utilizing the RapidFuzz sentence correction 
     ```bash
     bash scripts/build.sh
     ```
+Optionally you may run build.sh with `--enable-no-gil` parameter to compile, install and use python with NO-GIL support enabled and use Python 3.14.0. Docker image creation will be slower.
+
 3.  **Prepare Sentences File:** Create or copy your language's sentence definition file (`<language>.yaml`) into your desired volume path (e.g., `./sentences/en.yaml`). You can use examples from the [Wyoming Vosk repository](https://github.com/rhasspy/wyoming-vosk/tree/master/examples).
 4.  **Configure:** Edit the `docker-compose.yaml` file to set your **required** environment variables (`HASS_URI`, `HASS_TOKEN`, `STT_URI`) and volume paths (see sections below).
 5.  **Run the container:**
