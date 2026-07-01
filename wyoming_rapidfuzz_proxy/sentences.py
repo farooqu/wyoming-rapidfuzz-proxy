@@ -43,6 +43,8 @@ async def load_sentences_for_language(
     hass_token: str,
     in_memory_db: bool = False,
     custom_sentences_dirs: Optional[Sequence[Union[str, Path]]] = None,
+    builtin_sentences_dir: Union[str, Path] = "/opt/speech-to-phrase/sentences",
+    shared_lists_path: Union[str, Path] = "/opt/speech-to-phrase/shared_lists.yaml",
 ) -> Optional[LanguageConfig]:
     """Load Home Assistant intents for language with current HA entities.
 
@@ -51,6 +53,8 @@ async def load_sentences_for_language(
         language: The language code (e.g., 'en').
         hass_uri: Home Assistant websocket URI.
         hass_token: Home Assistant long-lived access token.
+        builtin_sentences_dir: Directory containing speech-to-phrase language YAML files.
+        shared_lists_path: speech-to-phrase shared_lists.yaml path.
 
     Returns:
         A LanguageConfig object or None if Home Assistant data could not be loaded.
@@ -65,7 +69,13 @@ async def load_sentences_for_language(
         _LOGGER.error("Failed to get Home Assistant info: %s", e)
         return None
 
-    sentences_yaml = build_sentences_yaml(language, info, custom_sentences_dirs=custom_sentences_dirs)
+    sentences_yaml = build_sentences_yaml(
+        language,
+        info,
+        custom_sentences_dirs=custom_sentences_dirs,
+        builtin_sentences_dir=builtin_sentences_dir,
+        shared_lists_path=shared_lists_path,
+    )
 
     # Optionally merge a YAML overlay if present. This keeps backwards
     # compatibility for users who want additional no_correct_patterns,
@@ -124,6 +134,8 @@ def build_sentences_yaml(
     language: str,
     info: Any,
     custom_sentences_dirs: Optional[Sequence[Union[str, Path]]] = None,
+    builtin_sentences_dir: Union[str, Path] = "/opt/speech-to-phrase/sentences",
+    shared_lists_path: Union[str, Path] = "/opt/speech-to-phrase/shared_lists.yaml",
 ) -> Dict[str, Any]:
     """Build a hassil-compatible sentence document from speech-to-phrase data."""
     try:
@@ -133,11 +145,16 @@ def build_sentences_yaml(
     except ImportError as exc:
         raise Exception("pip3 install wyoming-vosk[limited]") from exc  # pylint: disable=broad-exception-raised
 
-    package_dir = Path(__file__).parent
-    sentences_path = package_dir / "sentences" / f"{language}.yaml"
+    sentences_path = Path(builtin_sentences_dir) / f"{language}.yaml"
     if not sentences_path.is_file():
-        raise ValueError(f"No bundled speech-to-phrase sentences found for language: {language}")
+        raise ValueError(
+            "No speech-to-phrase sentences found for language "
+            f"'{language}' at {sentences_path}. Set --builtin-sentences-dir "
+            "or BUILTIN_SENTENCES_DIR to a directory containing speech-to-phrase "
+            "sentence YAML files."
+        )
 
+    _LOGGER.info("Loading speech-to-phrase sentences from %s", sentences_path)
     with open(sentences_path, "r", encoding="utf-8") as sentences_file:
         lang_data = LanguageData.from_dict(yaml.safe_load(sentences_file))
 
@@ -146,8 +163,16 @@ def build_sentences_yaml(
     for list_name, list_value in info.things.to_lists_dict().items():
         lists[list_name] = list_value
 
-    shared_lists_path = package_dir / "shared_lists.yaml"
-    with open(shared_lists_path, "r", encoding="utf-8") as shared_lists_file:
+    shared_lists_file_path = Path(shared_lists_path)
+    if not shared_lists_file_path.is_file():
+        raise ValueError(
+            "No speech-to-phrase shared lists found at "
+            f"{shared_lists_file_path}. Set --shared-lists-path or "
+            "SHARED_LISTS_PATH to the speech-to-phrase shared_lists.yaml file."
+        )
+
+    _LOGGER.info("Loading speech-to-phrase shared lists from %s", shared_lists_file_path)
+    with open(shared_lists_file_path, "r", encoding="utf-8") as shared_lists_file:
         merge_dict(lists, load_shared_lists(yaml.safe_load(shared_lists_file)))
 
     merge_custom_sentence_dirs(sentences_yaml, language, custom_sentences_dirs or [])
@@ -668,6 +693,8 @@ class SentenceManager:
         hass_token: str,
         in_memory_db: bool = False,
         custom_sentences_dirs: Optional[Sequence[Union[str, Path]]] = None,
+        builtin_sentences_dir: Union[str, Path] = "/opt/speech-to-phrase/sentences",
+        shared_lists_path: Union[str, Path] = "/opt/speech-to-phrase/shared_lists.yaml",
     ):
         self.sentences_dir = Path(sentences_dir)
         self.language = language
@@ -675,6 +702,8 @@ class SentenceManager:
         self.hass_token = hass_token
         self.in_memory_db = in_memory_db
         self.custom_sentences_dirs = custom_sentences_dirs or []
+        self.builtin_sentences_dir = Path(builtin_sentences_dir)
+        self.shared_lists_path = Path(shared_lists_path)
         self.config: Optional[LanguageConfig] = None
         self._running = False
         self._reload_event_task: Optional[asyncio.Task] = None
@@ -732,6 +761,8 @@ class SentenceManager:
                     self.hass_token,
                     self.in_memory_db,
                     self.custom_sentences_dirs,
+                    self.builtin_sentences_dir,
+                    self.shared_lists_path,
                 )
                 if new_config:
                     old_config = self.config
@@ -752,6 +783,16 @@ async def main() -> None:
     parser.add_argument("--sentences-dir", required=True)
     parser.add_argument("--language", required=True)
     parser.add_argument(
+        "--builtin-sentences-dir",
+        default="/opt/speech-to-phrase/sentences",
+        help="Directory containing speech-to-phrase sentence YAML files",
+    )
+    parser.add_argument(
+        "--shared-lists-path",
+        default="/opt/speech-to-phrase/shared_lists.yaml",
+        help="Path to speech-to-phrase shared_lists.yaml",
+    )
+    parser.add_argument(
         "--hass-uri",
         required=True,
         help="Home Assistant websocket URI (ws://...)"
@@ -769,7 +810,9 @@ async def main() -> None:
         args.sentences_dir,
         args.language,
         args.hass_uri,
-        args.hass_token
+        args.hass_token,
+        builtin_sentences_dir=args.builtin_sentences_dir,
+        shared_lists_path=args.shared_lists_path,
     )
     await manager.start()
 

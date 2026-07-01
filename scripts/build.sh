@@ -8,6 +8,7 @@ WYOMING_RAPIDFUZZ_PROXY_VERSION=$(cat ${VERSION_FILE} | tr -d '\n' | tr -d ' ')
 
 # Define the BUILD_FROM argument
 BUILD_FROM=ubuntu:25.10
+SPEECH_TO_PHRASE_REF=${SPEECH_TO_PHRASE_REF:-b4ecef9519e84fefd5dc35c0384c50efa13a0bad}
 
 # --- Logic to detect the --enable-no-gil argument ---
 ENABLE_NO_GIL="false"
@@ -31,6 +32,7 @@ docker build \
      --build-arg BUILD_FROM=${BUILD_FROM} \
      --build-arg WYOMING_RAPIDFUZZ_PROXY=${WYOMING_RAPIDFUZZ_PROXY_VERSION} \
      --build-arg ENABLE_NO_GIL=${ENABLE_NO_GIL} \
+     --build-arg SPEECH_TO_PHRASE_REF=${SPEECH_TO_PHRASE_REF} \
      -t wyoming-rapidfuzz-proxy:${WYOMING_RAPIDFUZZ_PROXY_VERSION} \
      -t wyoming-rapidfuzz-proxy:latest \
      -f Dockerfile .

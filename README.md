@@ -62,7 +62,7 @@ This project is a dedicated wrapper utilizing the RapidFuzz sentence correction 
     ```
 Optionally you may run build.sh with `--enable-no-gil` parameter to compile, install and use python with NO-GIL support enabled and use Python 3.14.0. Docker image creation will be slower.
 
-3.  **Configure:** Edit the `docker-compose.yaml` file to set your **required** environment variables (`HASS_URI`, `HASS_TOKEN`, `STT_URI`). A sentence YAML file is no longer required; the proxy uses bundled speech-to-phrase templates plus live Home Assistant context.
+3.  **Configure:** Edit the `docker-compose.yaml` file to set your **required** environment variables (`HASS_URI`, `HASS_TOKEN`, `STT_URI`). A sentence YAML file is no longer required; the proxy image bundles pinned speech-to-phrase templates plus live Home Assistant context.
 4.  **Optional custom sentences:** If you have custom sentence YAML files, mount them and set `CUSTOM_SENTENCES_DIRS` (see below).
 5.  **Run the container:**
     ```bash
@@ -72,9 +72,46 @@ Optionally you may run build.sh with `--enable-no-gil` parameter to compile, ins
 
 ---
 
+# Bundled speech-to-phrase data
+
+The Docker image downloads [OHF Voice speech-to-phrase](https://github.com/OHF-voice/speech-to-phrase) at build time and copies only its runtime sentence data into the image:
+
+* `/opt/speech-to-phrase/sentences/*.yaml`
+* `/opt/speech-to-phrase/shared_lists.yaml`
+* `/opt/speech-to-phrase/SPEECH_TO_PHRASE_REF`
+
+The pinned upstream ref is controlled by the Docker build argument `SPEECH_TO_PHRASE_REF`. By default it is pinned in the `Dockerfile`, so normal users do **not** need to mount or configure a built-in sentence path at runtime.
+
+To build with a different pinned ref using the included script:
+
+```bash
+SPEECH_TO_PHRASE_REF=<commit-sha> bash scripts/build.sh
+```
+
+To intentionally test or use a different speech-to-phrase checkout, mount it and override both paths:
+
+```yaml
+environment:
+  - BUILTIN_SENTENCES_DIR=/custom-speech-to-phrase/sentences
+  - SHARED_LISTS_PATH=/custom-speech-to-phrase/shared_lists.yaml
+volumes:
+  - /path/to/speech_to_phrase:/custom-speech-to-phrase:ro
+```
+
+When running from source without the Docker image, pass equivalent CLI flags:
+
+```bash
+python3 -m wyoming_rapidfuzz_proxy \
+  --builtin-sentences-dir /path/to/speech_to_phrase/sentences \
+  --shared-lists-path /path/to/speech_to_phrase/shared_lists.yaml \
+  ...
+```
+
+---
+
 # Volumes
 
-The proxy uses bundled speech-to-phrase sentence templates and live Home Assistant data, so a sentence YAML file is no longer required. The `/data` volume is still useful for the sentence database and optional overlays.
+The proxy uses bundled speech-to-phrase sentence templates and live Home Assistant data, so a sentence YAML file is no longer required. The `/data` volume is still useful for the sentence database and optional overlays. You do not need to mount `/opt/speech-to-phrase` unless you intentionally want to override the pinned built-in templates.
 
 | Path (Inside Container) | Description | Recommended Host Mount Example |
 | :--- | :--- | :--- |
@@ -87,7 +124,7 @@ The proxy uses bundled speech-to-phrase sentence templates and live Home Assista
 
 The proxy now builds correction candidates from:
 
-1. Bundled curated templates from [OHF Voice speech-to-phrase](https://github.com/OHF-voice/speech-to-phrase). These templates mirror Home Assistant Assist-style commands without expanding the full upstream `home-assistant-intents` corpus.
+1. Bundled curated templates from [OHF Voice speech-to-phrase](https://github.com/OHF-voice/speech-to-phrase). The Docker image pins these templates at build time and loads them from `/opt/speech-to-phrase` by default. These templates mirror Home Assistant Assist-style commands without expanding the full upstream `home-assistant-intents` corpus.
 2. Live Home Assistant context fetched over websocket:
    * Assist-exposed, non-disabled entities and their aliases. Entity candidates are limited to entities returned by `homeassistant/expose_entity/list` with `conversation: true`.
    * areas and floors with aliases
@@ -113,6 +150,8 @@ Home Assistant does not currently expose the complete merged built-in + custom H
 | **LANGUAGE** | The language code for bundled speech-to-phrase templates and optional custom sentences. | `en` |
 | **CORRECTION_THRESHOLD** | The maximum **Levenshtein distance** allowed for a correction to be applied. See the section below for details. | `15` |
 | **CUSTOM_SENTENCES_DIRS** | Optional comma-separated directories using Home Assistant/speech-to-phrase custom sentence layout. For English, the proxy looks for `<dir>/en/*.yaml` first, then the language family directory. | `/custom_sentences` |
+| **BUILTIN_SENTENCES_DIR** | Optional override for the speech-to-phrase built-in sentence directory. The Docker image already provides this by default. | `/opt/speech-to-phrase/sentences` |
+| **SHARED_LISTS_PATH** | Optional override for the speech-to-phrase shared lists file. The Docker image already provides this by default. | `/opt/speech-to-phrase/shared_lists.yaml` |
 | **LIMIT_SENTENCES** | If `TRUE`, transcripts that do not match any defined sentence will be discarded. | `FALSE` |
 | **ALLOW_UNKNOWN** | If `TRUE` and the STT service reports an `<unk>` token, the proxy can return a specific `unknown_text` (if defined in the YAML) instead of failing. | `FALSE` |
 | **DEBUG_LOGGING** | Set to `TRUE` to enable debug-level logging output. | `FALSE` |

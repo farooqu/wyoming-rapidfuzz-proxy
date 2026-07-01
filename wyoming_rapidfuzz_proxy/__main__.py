@@ -40,6 +40,22 @@ async def main() -> None:
             "Assistant layout, e.g. custom_sentences/en/*.yaml. Can be repeated."
         ),
     )
+    parser.add_argument(
+        "--builtin-sentences-dir",
+        default="/opt/speech-to-phrase/sentences",
+        help=(
+            "Directory containing pinned speech-to-phrase sentence YAML files. "
+            "The Docker image bundles this at /opt/speech-to-phrase/sentences."
+        ),
+    )
+    parser.add_argument(
+        "--shared-lists-path",
+        default="/opt/speech-to-phrase/shared_lists.yaml",
+        help=(
+            "Path to pinned speech-to-phrase shared_lists.yaml. The Docker image "
+            "bundles this at /opt/speech-to-phrase/shared_lists.yaml."
+        ),
+    )
 
     # Arguments for Home Assistant connection
     parser.add_argument(
@@ -141,6 +157,8 @@ async def main() -> None:
         hass_token=cli_args.hass_token,
         in_memory_db=cli_args.in_memory_db,
         custom_sentences_dirs=cli_args.custom_sentences_dir,
+        builtin_sentences_dir=cli_args.builtin_sentences_dir,
+        shared_lists_path=cli_args.shared_lists_path,
     )
     await sentence_manager.start()
 

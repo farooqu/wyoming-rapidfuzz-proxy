@@ -12,6 +12,9 @@ services:
       - LIMIT_SENTENCES=TRUE
       - ALLOW_UNKNOWN=FALSE
       - CUSTOM_SENTENCES_DIRS=
+      # Optional overrides. The image bundles pinned speech-to-phrase data here by default.
+      - BUILTIN_SENTENCES_DIR=/opt/speech-to-phrase/sentences
+      - SHARED_LISTS_PATH=/opt/speech-to-phrase/shared_lists.yaml
       - HASS_TOKEN=LONG_LIVED_TOKEN_HERE
       - HASS_URI=ws://HOME_ASSISTANT_IP_OR_URI:8123/api/websocket
     volumes:

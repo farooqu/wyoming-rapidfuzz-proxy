@@ -3,9 +3,12 @@ FROM ${BUILD_FROM}
 
 ARG PYTHON_VERSION=3.14.0
 ARG ENABLE_NO_GIL=false
+ARG SPEECH_TO_PHRASE_REF=b4ecef9519e84fefd5dc35c0384c50efa13a0bad
 
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV DEBIAN_FRONTEND=noninteractive
+ENV BUILTIN_SENTENCES_DIR=/opt/speech-to-phrase/sentences
+ENV SHARED_LISTS_PATH=/opt/speech-to-phrase/shared_lists.yaml
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -53,6 +56,34 @@ COPY scripts ./
 COPY requirements.txt ./
 
 RUN python3 -m pip install --no-cache-dir -r requirements.txt
+
+RUN python3 - <<PY
+import tarfile
+import urllib.request
+from pathlib import Path
+
+ref = "${SPEECH_TO_PHRASE_REF}"
+archive_path = Path("/tmp/speech-to-phrase.tar.gz")
+target_dir = Path("/opt/speech-to-phrase")
+source_prefix = f"speech-to-phrase-{ref}/speech_to_phrase/"
+url = f"https://github.com/OHF-voice/speech-to-phrase/archive/{ref}.tar.gz"
+
+urllib.request.urlretrieve(url, archive_path)
+target_dir.mkdir(parents=True, exist_ok=True)
+
+with tarfile.open(archive_path, "r:gz") as archive:
+    for member in archive.getmembers():
+        if not member.name.startswith(source_prefix):
+            continue
+
+        relative_name = member.name[len(source_prefix):]
+        if relative_name == "shared_lists.yaml" or relative_name.startswith("sentences/"):
+            member.name = relative_name
+            archive.extract(member, target_dir)
+
+archive_path.unlink()
+(target_dir / "SPEECH_TO_PHRASE_REF").write_text(ref + "\n", encoding="utf-8")
+PY
 
 RUN python3 --version && python3 -c "import sys; print(f'--> STATUS: GIL is {\"ENABLED\" if sys._is_gil_enabled() else \"DISABLED (NO-GIL ACTIVE)\"}')"
 

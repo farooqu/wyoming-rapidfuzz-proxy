@@ -17,6 +17,8 @@ IN_MEMORY_DB=${IN_MEMORY_DB:-TRUE}
 LIMIT_SENTENCES=${LIMIT_SENTENCES:-FALSE}
 ALLOW_UNKNOWN=${ALLOW_UNKNOWN:-FALSE}
 CUSTOM_SENTENCES_DIRS=${CUSTOM_SENTENCES_DIRS:-}
+BUILTIN_SENTENCES_DIR=${BUILTIN_SENTENCES_DIR:-/opt/speech-to-phrase/sentences}
+SHARED_LISTS_PATH=${SHARED_LISTS_PATH:-/opt/speech-to-phrase/shared_lists.yaml}
 
 if [ "${DEBUG_LOGGING}" == "TRUE" ]; then
     flags+=('--debug')
@@ -48,6 +50,8 @@ echo IN_MEMORY_DB           =   ${IN_MEMORY_DB}
 echo LIMIT_SENTENCES        =   ${LIMIT_SENTENCES}
 echo ALLOW_UNKNOWN          =   ${ALLOW_UNKNOWN}
 echo CUSTOM_SENTENCES_DIRS  =   ${CUSTOM_SENTENCES_DIRS}
+echo BUILTIN_SENTENCES_DIR  =   ${BUILTIN_SENTENCES_DIR}
+echo SHARED_LISTS_PATH      =   ${SHARED_LISTS_PATH}
 
 cd /usr/wyoming_rapidfuzz_proxy
 
@@ -58,6 +62,8 @@ python3 -m wyoming_rapidfuzz_proxy \
     --hass-uri ${HASS_URI} \
     --uri ${URI} \
     --data-dir /data \
+    --builtin-sentences-dir ${BUILTIN_SENTENCES_DIR} \
+    --shared-lists-path ${SHARED_LISTS_PATH} \
     --correction-threshold $CORRECTION_THRESHOLD \
     --language $LANGUAGE \
     ${flags[@]}
