@@ -11,7 +11,7 @@ The Wyoming RapidFuzz Proxy enables the use of the powerful sentence correction 
 
 The proxy operates as a middle layer between Home Assistant and your chosen Wyoming STT service. Its primary function is to:
 
-1.  **Fetch Data:** Connect to Home Assistant upon startup to retrieve the latest entities, areas, and conversational sentences.
+1.  **Fetch Data:** Connect to Home Assistant upon startup and periodically thereafter to retrieve the latest Assist-exposed entities, areas, floors, sentence triggers, and ask-question answers.
 2.  **Intercept:** Intercept the raw transcribed voice command from the upstream STT service.
 3.  **Correct:** Apply the RapidFuzz sentence correction logic against the gathered sentence data.
 4.  **Pass Back:** Pass the corrected text back to Home Assistant.
@@ -62,8 +62,8 @@ This project is a dedicated wrapper utilizing the RapidFuzz sentence correction 
     ```
 Optionally you may run build.sh with `--enable-no-gil` parameter to compile, install and use python with NO-GIL support enabled and use Python 3.14.0. Docker image creation will be slower.
 
-3.  **Prepare Sentences File:** Create or copy your language's sentence definition file (`<language>.yaml`) into your desired volume path (e.g., `./sentences/en.yaml`). You can use examples from the [Wyoming Vosk repository](https://github.com/rhasspy/wyoming-vosk/tree/master/examples).
-4.  **Configure:** Edit the `docker-compose.yaml` file to set your **required** environment variables (`HASS_URI`, `HASS_TOKEN`, `STT_URI`) and volume paths (see sections below).
+3.  **Configure:** Edit the `docker-compose.yaml` file to set your **required** environment variables (`HASS_URI`, `HASS_TOKEN`, `STT_URI`). A sentence YAML file is no longer required; the proxy uses bundled speech-to-phrase templates plus live Home Assistant context.
+4.  **Optional custom sentences:** If you have custom sentence YAML files, mount them and set `CUSTOM_SENTENCES_DIRS` (see below).
 5.  **Run the container:**
     ```bash
     docker compose up -d
@@ -74,11 +74,31 @@ Optionally you may run build.sh with `--enable-no-gil` parameter to compile, ins
 
 # Volumes
 
-The proxy requires a volume mount for the sentence definition files.
+The proxy uses bundled speech-to-phrase sentence templates and live Home Assistant data, so a sentence YAML file is no longer required. The `/data` volume is still useful for the sentence database and optional overlays.
 
 | Path (Inside Container) | Description | Recommended Host Mount Example |
 | :--- | :--- | :--- |
-| **/data** | This directory must contain the sentence definition file used for correction, named **`<language>.yaml`** (e.g., `en.yaml`). | `./sentences` |
+| **/data** | Stores the sentence database. If `/data/<language>.yaml` exists, it is treated as an optional overlay for extra `intents`, `lists`, `expansion_rules`, `no_correct_patterns`, or `unknown_text`. | `./data` |
+| custom sentence dir | Optional directory containing Home Assistant/speech-to-phrase style custom sentences, such as `/custom_sentences/en/*.yaml`. Configure with `CUSTOM_SENTENCES_DIRS`. | `/config/custom_sentences:/custom_sentences:ro` |
+
+---
+
+# Sentence Sources
+
+The proxy now builds correction candidates from:
+
+1. Bundled curated templates from [OHF Voice speech-to-phrase](https://github.com/OHF-voice/speech-to-phrase). These templates mirror Home Assistant Assist-style commands without expanding the full upstream `home-assistant-intents` corpus.
+2. Live Home Assistant context fetched over websocket:
+   * Assist-exposed, non-disabled entities and their aliases. Entity candidates are limited to entities returned by `homeassistant/expose_entity/list` with `conversation: true`.
+   * areas and floors with aliases
+   * sentence trigger sentences from `conversation/sentences/list`
+   * `assist_satellite.ask_question` answer sentences from automation/script configs
+3. Optional custom sentence directories configured by `CUSTOM_SENTENCES_DIRS`.
+4. Optional `/data/<language>.yaml` overlay for advanced users.
+
+The proxy may fetch all Home Assistant states because the websocket API exposes state attributes in bulk, but it only uses attributes for Assist-exposed entity IDs when building the correction context. This keeps correction candidates aligned with the entities Assist can control or query.
+
+Home Assistant does not currently expose the complete merged built-in + custom HassIL intent corpus over websocket. Custom sentence files therefore need to be mounted into the proxy if you want them included.
 
 ---
 
@@ -90,8 +110,10 @@ The proxy requires a volume mount for the sentence definition files.
 | **STT_URI** | The connection URI for the **upstream Wyoming STT service** (the one providing the transcription). | `tcp://192.168.1.100:10300` |
 | **HASS_URI** | **REQUIRED.** The Home Assistant websocket URI. Used by the proxy to fetch current entities, areas, floors, and conversational triggers. | `ws://homeassistant.local:8123/api/websocket` |
 | **HASS_TOKEN** | **REQUIRED.** A Home Assistant **long-lived access token** with sufficient permissions to access the necessary API endpoints (entities, areas, etc.). | `eyJhbGciOiJIUzI1NiI...` |
-| **LANGUAGE** | The language code corresponding to the definition file in the `/data` volume (e.g., `en` for `/data/en.yaml`). | `en` |
-| **CORRECTION_THRESHOLD** | The maximum **Levenshtein distance** allowed for a correction to be applied. Set to `0` to disable correction entirely. See the section below for details. | `15` |
+| **LANGUAGE** | The language code for bundled speech-to-phrase templates and optional custom sentences. | `en` |
+| **CORRECTION_THRESHOLD** | The maximum **Levenshtein distance** allowed for a correction to be applied. See the section below for details. | `15` |
+| **REFRESH_INTERVAL** | Seconds between Home Assistant refreshes. Refresh rebuilds correction candidates from current exposed entities, areas, floors, sentence triggers, ask-question answers, and optional custom sentence files. | `60` |
+| **CUSTOM_SENTENCES_DIRS** | Optional comma-separated directories using Home Assistant/speech-to-phrase custom sentence layout. For English, the proxy looks for `<dir>/en/*.yaml` first, then the language family directory. | `/custom_sentences` |
 | **LIMIT_SENTENCES** | If `TRUE`, transcripts that do not match any defined sentence will be discarded. | `FALSE` |
 | **ALLOW_UNKNOWN** | If `TRUE` and the STT service reports an `<unk>` token, the proxy can return a specific `unknown_text` (if defined in the YAML) instead of failing. | `FALSE` |
 | **DEBUG_LOGGING** | Set to `TRUE` to enable debug-level logging output. | `FALSE` |

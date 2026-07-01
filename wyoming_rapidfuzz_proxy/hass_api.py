@@ -228,6 +228,21 @@ def _coerce_list(str_or_list: Union[str, List[str]]) -> List[str]:
     return str_or_list
 
 
+def _clean_names(names: List[Any]) -> List[str]:
+    """Return stripped, non-empty string names."""
+    clean_names: List[str] = []
+    seen = set()
+    for name in names:
+        if not isinstance(name, str):
+            continue
+        clean_name = name.strip()
+        if not clean_name or clean_name in seen:
+            continue
+        seen.add(clean_name)
+        clean_names.append(clean_name)
+    return clean_names
+
+
 @dataclass
 class HomeAssistantInfo:
     """Information loaded from Home Assistant websocket API."""
@@ -300,6 +315,11 @@ async def get_hass_info(token: str, uri: str) -> HomeAssistantInfo:
                 if exposed_info.get("conversation"):
                     entity_ids.append(entity_id)
 
+            _LOGGER.info(
+                "Found %s Assist-exposed entities for correction candidate generation",
+                len(entity_ids),
+            )
+
             # Get entity states
             await websocket.send_json(
                 {
@@ -310,6 +330,10 @@ async def get_hass_info(token: str, uri: str) -> HomeAssistantInfo:
             msg = await websocket.receive_json()
             assert msg["success"], msg
             states = {s["entity_id"]: s for s in msg["result"]}
+            _LOGGER.info(
+                "Fetched %s Home Assistant states; only Assist-exposed entities are used",
+                len(states),
+            )
 
             # Floors
             await websocket.send_json(
@@ -323,9 +347,7 @@ async def get_hass_info(token: str, uri: str) -> HomeAssistantInfo:
             for floor_info in floors.values():
                 names = [floor_info["name"]]
                 names.extend(floor_info.get("aliases", []))
-                things.floors.append(
-                    Floor(names=[name.strip() for name in names])
-                )
+                things.floors.append(Floor(names=_clean_names(names)))
 
             # Areas
             await websocket.send_json(
@@ -337,11 +359,11 @@ async def get_hass_info(token: str, uri: str) -> HomeAssistantInfo:
             for area_info in areas.values():
                 names = [area_info["name"]]
                 names.extend(area_info.get("aliases", []))
-                things.areas.append(
-                    Area(names=[name.strip() for name in names])
-                )
+                things.areas.append(Area(names=_clean_names(names)))
 
-            # Get entity registry entries for exposed entities
+            # Get entity registry entries for Assist-exposed entities only. This
+            # keeps the generated correction candidates aligned with the entities
+            # Home Assistant Assist is allowed to control/query.
             await websocket.send_json(
                 {
                     "id": next_id(),
@@ -352,6 +374,7 @@ async def get_hass_info(token: str, uri: str) -> HomeAssistantInfo:
 
             msg = await websocket.receive_json()
             assert msg["success"], msg
+            loaded_entity_count = 0
             for entity_id, entity_info in msg["result"].items():
                 domain = entity_id.split(".")[0]
                 name = None
@@ -411,7 +434,7 @@ async def get_hass_info(token: str, uri: str) -> HomeAssistantInfo:
 
                 things.entities.append(
                     Entity(
-                        names=[name.strip() for name in names],
+                        names=_clean_names(names),
                         domain=domain,
                         light_supports_color=light_supports_color,
                         light_supports_brightness=light_supports_brightness,
@@ -422,6 +445,12 @@ async def get_hass_info(token: str, uri: str) -> HomeAssistantInfo:
                         media_player_supports_next_track=media_player_supports_next_track,
                     )
                 )
+                loaded_entity_count += 1
+
+            _LOGGER.info(
+                "Loaded %s non-disabled Assist-exposed entities into correction context",
+                loaded_entity_count,
+            )
 
             # Get sentences from conversation sentence triggers
             await websocket.send_json(

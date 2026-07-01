@@ -24,16 +24,27 @@ async def main() -> None:
     parser.add_argument(
         "--language",
         default="en",
-        help=(
-            "Set default model language. There must be a sentence definition file "
-            "in the --data-dir folder named “[language].yaml” (e.g., “en.yaml”). "
-            "(Default=en)"
-        ),
+        help="Set default model language for Home Assistant intents. (Default=en)",
     )
     parser.add_argument(
         "--data-dir",
         default="/data",
-        help="Directory to store definition file and databases with sentences",
+        help="Directory for the sentence database and optional [language].yaml overlay",
+    )
+    parser.add_argument(
+        "--refresh-interval",
+        type=float,
+        default=60.0,
+        help="Seconds between Home Assistant sentence/entity refreshes. (Default=60)",
+    )
+    parser.add_argument(
+        "--custom-sentences-dir",
+        action="append",
+        default=[],
+        help=(
+            "Directory containing custom sentence files in speech-to-phrase/Home "
+            "Assistant layout, e.g. custom_sentences/en/*.yaml. Can be repeated."
+        ),
     )
 
     # Arguments for Home Assistant connection
@@ -134,7 +145,9 @@ async def main() -> None:
         language=cli_args.language,
         hass_uri=cli_args.hass_uri,
         hass_token=cli_args.hass_token,
+        poll_interval=cli_args.refresh_interval,
         in_memory_db=cli_args.in_memory_db,
+        custom_sentences_dirs=cli_args.custom_sentences_dir,
     )
     await sentence_manager.start()
 

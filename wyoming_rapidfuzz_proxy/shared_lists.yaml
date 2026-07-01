@@ -1,0 +1,36 @@
+---
+# Lists shared by all languages.
+
+# lights
+brightness:
+  range:
+    from: 5
+    to: 100
+    step: 5
+
+# covers
+position:
+  range:
+    from: 10
+    to: 100
+    step: 10
+
+# timers
+seconds:
+  range:
+    from: 10
+    to: 60
+    step: 5
+
+minutes:
+  multi_range:
+    - from: 2
+      to: 19
+    - from: 20
+      to: 60
+      step: 5
+
+hours:
+  range:
+    from: 2
+    to: 24

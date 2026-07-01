@@ -5,11 +5,10 @@ import logging
 import re
 import time
 import sqlite3
-from collections import abc
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 import asyncio
 try:
     from .hass_api import get_hass_info
@@ -43,119 +42,45 @@ async def load_sentences_for_language(
     hass_uri: str,
     hass_token: str,
     in_memory_db: bool = False,
+    custom_sentences_dirs: Optional[Sequence[Union[str, Path]]] = None,
 ) -> Optional[LanguageConfig]:
-    """Load YAML file for language with sentence templates and HA entities.
+    """Load Home Assistant intents for language with current HA entities.
 
     Args:
-        sentences_dir: Directory containing language YAML files.
+        sentences_dir: Optional directory containing language YAML overlay files.
         language: The language code (e.g., 'en').
         hass_uri: Home Assistant websocket URI.
         hass_token: Home Assistant long-lived access token.
 
     Returns:
-        A LanguageConfig object or None if the file is not found.
+        A LanguageConfig object or None if Home Assistant data could not be loaded.
     """
-    sentences_path = Path(sentences_dir) / f"{language}.yaml"
-    if not sentences_path.is_file():
-        _LOGGER.warning("Sentences file not found: %s", sentences_path)
-        return None
-
-    try:
-        import yaml
-    except ImportError as exc:
-        raise Exception("pip3 install wyoming-vosk[limited]") from exc  # pylint: disable=broad-exception-raised
-
-    # Load and verify YAML
-    _LOGGER.debug("Loading %s", sentences_path)
-    with open(sentences_path, "r", encoding="utf-8") as sentences_file:
-        sentences_yaml = yaml.safe_load(sentences_file)
-        if not sentences_yaml:
-            _LOGGER.warning("Empty YAML file: %s", sentences_path)
-            return None
-
-        if not sentences_yaml.get("sentences"):
-            _LOGGER.warning("No sentences in %s", sentences_path)
-            return None
-
-    # Fetch info from Home Assistant asynchronously
+    # Fetch info from Home Assistant asynchronously first. Runtime HA context is the
+    # source of truth for exposed entities, areas, floors, and sentence triggers.
     _LOGGER.debug("Fetching Home Assistant info from %s...", hass_uri)
     try:
         info = await get_hass_info(hass_token, hass_uri)
         _LOGGER.debug("Got Home Assistant info.")
     except Exception as e:  # pylint: disable=broad-exception-caught
         _LOGGER.error("Failed to get Home Assistant info: %s", e)
-        # Continue without HA info if fetching fails
-        info = None
+        return None
 
-    # Merge sentences yaml with Home Assistant Instance things
-    if info:
-        grouped_things = {
-            "entities": {},
-            "areas": [],
-            "floors": [],
-            "extra_sentences": []
-        }
+    sentences_yaml = build_sentences_yaml(language, info, custom_sentences_dirs=custom_sentences_dirs)
 
-        # Group entities by domain
-        entities = [e for e in info.things.entities if e.names]
-        for e in entities:
-            domain = e.domain
-            if not domain:
-                continue
+    # Optionally merge a YAML overlay if present. This keeps backwards
+    # compatibility for users who want additional no_correct_patterns,
+    # expansion_rules, lists, or custom sentence templates, but the file is no
+    # longer required.
+    sentences_path = Path(sentences_dir) / f"{language}.yaml"
+    if sentences_path.is_file():
+        merge_overlay(sentences_yaml, load_yaml_overlay(sentences_path))
 
-            if domain not in grouped_things["entities"]:
-                grouped_things["entities"][domain] = []
-
-            for name in e.names:
-                if name and name not in grouped_things["entities"][domain]:
-                    grouped_things["entities"][domain].append(name)
-
-        grouped_things["entities"] = {
-            d: lst for d, lst in grouped_things["entities"].items() if lst
-        }
-
-        # Collect Area names
-        for a in info.things.areas:
-            for name in a.names or []:
-                if name and name not in grouped_things["areas"]:
-                    grouped_things["areas"].append(name)
-
-        # Collect Floor names
-        for f in info.things.floors:
-            for name in f.names or []:
-                if name and name not in grouped_things["floors"]:
-                    grouped_things["floors"].append(name)
-
-        # Collect Extra Sentences (from automations/scripts)
-        for s in info.things.extra_sentences:
-            if s and s not in grouped_things["extra_sentences"]:
-                grouped_things["extra_sentences"].append(s)
-
-        # Ensure 'lists' node exists
-        if "lists" not in sentences_yaml:
-            sentences_yaml["lists"] = {}
-
-        # Populate slot lists from HA entities/areas/floors
-        sentences_yaml["lists"]["light"] = grouped_things["entities"].get("light", [])
-        sentences_yaml["lists"]["media_player"] = grouped_things["entities"].get(
-            "media_player", []
-        )
-        sentences_yaml["lists"]["scene"] = grouped_things["entities"].get("scene", [])
-        sentences_yaml["lists"]["switch"] = grouped_things["entities"].get("switch", [])
-        sentences_yaml["lists"]["climate"] = grouped_things["entities"].get(
-            "climate", []
-        )
-        sentences_yaml["lists"]["vacuum"] = grouped_things["entities"].get("vacuum", [])
-        sentences_yaml["lists"]["area"] = grouped_things["areas"]
-        sentences_yaml["lists"]["areas"] = grouped_things["areas"]
-
-        # Add extra sentences to the root "sentences" node
-        sentences_yaml.setdefault("sentences", [])
-        sentences_yaml["sentences"].extend(grouped_things["extra_sentences"])
-    else:
-        _LOGGER.warning("Skipping Home Assistant entity loading.")
+    if not sentences_yaml.get("intents"):
+        _LOGGER.warning("No sentences loaded for language: %s", language)
+        return None
 
     # Create the configuration object
+    Path(sentences_dir).mkdir(parents=True, exist_ok=True)
     if in_memory_db:
         db_conn = sqlite3.connect(":memory:")
     else:
@@ -178,83 +103,156 @@ async def load_sentences_for_language(
     config.unknown_text = sentences_yaml.get("unknown_text")
 
     # Generate all possible sentences into the in-memory config object
-    generate_sentences(sentences_yaml, config)
+    generate_sentences(sentences_yaml, config, language=language)
 
     return config
 
 
+def load_yaml_overlay(sentences_path: Path) -> Dict[str, Any]:
+    """Load optional YAML overlay for a language."""
+    try:
+        import yaml
+    except ImportError as exc:
+        raise Exception("pip3 install wyoming-vosk[limited]") from exc  # pylint: disable=broad-exception-raised
+
+    _LOGGER.debug("Loading %s", sentences_path)
+    with open(sentences_path, "r", encoding="utf-8") as sentences_file:
+        return yaml.safe_load(sentences_file) or {}
+
+
+def build_sentences_yaml(
+    language: str,
+    info: Any,
+    custom_sentences_dirs: Optional[Sequence[Union[str, Path]]] = None,
+) -> Dict[str, Any]:
+    """Build a hassil-compatible sentence document from speech-to-phrase data."""
+    try:
+        import yaml
+        from hassil import merge_dict
+        from .lang_sentences import LanguageData, load_shared_lists
+    except ImportError as exc:
+        raise Exception("pip3 install wyoming-vosk[limited]") from exc  # pylint: disable=broad-exception-raised
+
+    package_dir = Path(__file__).parent
+    sentences_path = package_dir / "sentences" / f"{language}.yaml"
+    if not sentences_path.is_file():
+        raise ValueError(f"No bundled speech-to-phrase sentences found for language: {language}")
+
+    with open(sentences_path, "r", encoding="utf-8") as sentences_file:
+        lang_data = LanguageData.from_dict(yaml.safe_load(sentences_file))
+
+    sentences_yaml = lang_data.to_intents_dict()
+    lists = sentences_yaml.setdefault("lists", {})
+    for list_name, list_value in info.things.to_lists_dict().items():
+        lists[list_name] = list_value
+
+    shared_lists_path = package_dir / "shared_lists.yaml"
+    with open(shared_lists_path, "r", encoding="utf-8") as shared_lists_file:
+        merge_dict(lists, load_shared_lists(yaml.safe_load(shared_lists_file)))
+
+    merge_custom_sentence_dirs(sentences_yaml, language, custom_sentences_dirs or [])
+
+    # conversation/sentences/list exposes automation sentence triggers; HA does
+    # not currently expose the full merged built-in + custom sentence corpus over
+    # websocket, so these are the runtime-only sentences available externally.
+    if info.things.extra_sentences:
+        sentences_yaml.setdefault("intents", {})["ExtraSentences"] = {
+            "data": [{"sentences": info.things.extra_sentences}]
+        }
+
+    return sentences_yaml
+
+
+def merge_custom_sentence_dirs(
+    sentences_yaml: Dict[str, Any],
+    language: str,
+    custom_sentences_dirs: Sequence[Union[str, Path]],
+) -> None:
+    """Merge custom sentence YAML files using speech-to-phrase directory layout."""
+    if not custom_sentences_dirs:
+        return
+
+    try:
+        import yaml
+        from hassil import merge_dict
+    except ImportError as exc:
+        raise Exception("pip3 install wyoming-vosk[limited]") from exc  # pylint: disable=broad-exception-raised
+
+    language_family = language.split("-", maxsplit=1)[0]
+    for custom_root in custom_sentences_dirs:
+        root_path = Path(custom_root)
+        language_dir = root_path / language
+        if not language_dir.exists():
+            language_dir = root_path / language_family
+
+        if not language_dir.exists():
+            _LOGGER.warning("Custom sentences directory not found: %s", language_dir)
+            continue
+
+        for sentences_path in sorted(language_dir.glob("*.yaml")):
+            _LOGGER.info("Loading custom sentences from %s", sentences_path)
+            with open(sentences_path, "r", encoding="utf-8") as sentences_file:
+                merge_dict(sentences_yaml, yaml.safe_load(sentences_file) or {})
+
+
+def merge_overlay(base: Dict[str, Any], overlay: Dict[str, Any]) -> None:
+    """Merge optional user YAML into the generated HA sentence document."""
+    if not overlay:
+        return
+
+    for key in ("sentences", "no_correct_patterns"):
+        if overlay.get(key):
+            base.setdefault(key, [])
+            base[key] = unique_preserve_order([*base[key], *overlay[key]])
+
+    for key in ("lists", "expansion_rules", "responses", "intents"):
+        if overlay.get(key):
+            base.setdefault(key, {})
+            recursive_merge(base[key], overlay[key])
+
+    if overlay.get("unknown_text") is not None:
+        base["unknown_text"] = overlay["unknown_text"]
+
+
+def recursive_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> None:
+    """Recursively merge dictionaries in place."""
+    for key, value in overlay.items():
+        if isinstance(base.get(key), dict) and isinstance(value, dict):
+            recursive_merge(base[key], value)
+        else:
+            base[key] = value
+
+
+def unique_preserve_order(values: Iterable[str]) -> List[str]:
+    """Return unique, truthy strings while preserving order."""
+    unique_values: List[str] = []
+    seen = set()
+    for value in values:
+        if not isinstance(value, str) or not value:
+            continue
+        if value in seen:
+            continue
+        seen.add(value)
+        unique_values.append(value)
+    return unique_values
+
+
 # pylint: disable=too-many-locals,too-many-branches,too-many-statements
-def generate_sentences(sentences_yaml: Dict[str, Any], config: LanguageConfig):
+def generate_sentences(sentences_yaml: Dict[str, Any], config: LanguageConfig, language: str):
     """Generate all possible sentences from templates and populate config."""
     try:
         import hassil.parse_expression
         import hassil.sample
-        from hassil.intents import SlotList, TextChunk, TextSlotList, TextSlotValue
+        from hassil.intents import Intents
         from hassil.parse_expression import Sentence
     except ImportError as exc:
         raise Exception("pip3 install wyoming-vosk[limited]") from exc  # pylint: disable=broad-exception-raised
 
     start_time = time.monotonic()
 
-    templates = sentences_yaml["sentences"]
-
-    # Load slot lists from YAML and HA info
-    slot_lists: Dict[str, SlotList] = {}
-    for slot_name, slot_info in sentences_yaml.get("lists", {}).items():
-        if isinstance(slot_info, abc.Sequence):
-            slot_info = {"values": slot_info}
-
-        slot_values = slot_info.get("values")
-        if not slot_values:
-            _LOGGER.warning("No values for list %s, skipping", slot_name)
-            continue
-
-        slot_list_values: List[TextSlotValue] = []
-        for slot_value in slot_values:
-            values_in: List[str] = []
-            value_out: str
-
-            if isinstance(slot_value, str):
-                values_in.append(slot_value)
-                value_out = slot_value
-            else:
-                value_in = slot_value["in"]
-                value_out = slot_value["out"]
-
-                if hassil.intents.is_template(value_in):
-                    input_expression = hassil.parse_expression.parse_sentence(
-                        value_in
-                    )
-                    if isinstance(input_expression, Sentence):
-                        input_expression = input_expression.expression
-
-                    for input_text in hassil.sample.sample_expression(
-                        input_expression,
-                    ):
-                        values_in.append(input_text)
-                else:
-                    values_in.append(value_in)
-
-            for value_in in values_in:
-                slot_list_values.append(
-                    TextSlotValue(TextChunk(value_in), value_out=value_out)
-                )
-
-        slot_lists[slot_name] = TextSlotList("name", slot_list_values)
-
-    # Load expansion rules
-    expansion_rules: Dict[str, "Sentence"] = {}
-    for rule_name, rule_text in sentences_yaml.get("expansion_rules", {}).items():
-        # Ensure we use the correct parse function (Sentence is a type alias)
-        import hassil.parse_expression
-        
-        parsed_rule = hassil.parse_expression.parse_sentence(
-            rule_text
-        )
-        if isinstance(parsed_rule, Sentence):
-            parsed_rule = parsed_rule.expression
-
-        expansion_rules[rule_name] = parsed_rule
+    intents = Intents.from_dict(sentences_yaml)
+    slot_lists = intents.slot_lists
+    expansion_rules = intents.expansion_rules
 
     # Generate possible sentences
     num_sentences = 0
@@ -264,50 +262,60 @@ def generate_sentences(sentences_yaml: Dict[str, Any], config: LanguageConfig):
     # Clear existing data if any (important for file-based DB reload)
     config.db_conn.execute("DELETE FROM sentences")
 
-    for template in templates:
-        if isinstance(template, str):
-            input_templates: List[str] = [template]
-            output_text: Optional[str] = None
-        else:
-            input_str_or_list = template["in"]
-            if isinstance(input_str_or_list, str):
-                input_templates = [input_str_or_list]
-            else:
-                input_templates = input_str_or_list
+    for intent_info in sentences_yaml.get("intents", {}).values():
+        for data in intent_info.get("data", []):
+            data_slot_lists = filter_slot_lists_for_context(
+                slot_lists,
+                data.get("requires_context"),
+                data.get("excludes_context"),
+            )
+            for input_template in data.get("sentences", []):
+                output_text: Optional[str] = None
 
-            output_text = template.get("out")
-
-        for input_template in input_templates:
-            if hassil.intents.is_template(input_template):
-                input_expression = hassil.parse_expression.parse_sentence(
-                    input_template
-                )
-                if isinstance(input_expression, Sentence):
-                    input_expression = input_expression.expression
-
-                for input_text, maybe_output_text in sample_expression_with_output(
-                    input_expression,
-                    slot_lists=slot_lists,
-                    expansion_rules=expansion_rules,
-                ):
-                    # Add generated sentence to batch
-                    batch.append(
-                        (input_text, output_text or maybe_output_text or input_text)
+                if not isinstance(input_template, str):
+                    input_str_or_list = input_template["in"]
+                    output_text = input_template.get("out")
+                    input_templates = (
+                        [input_str_or_list]
+                        if isinstance(input_str_or_list, str)
+                        else input_str_or_list
                     )
-                    num_sentences += 1
-            else:
-                # Direct sentence (no template)
-                batch.append(
-                    (input_template, output_text or input_template)
-                )
-                num_sentences += 1
-            
-            if len(batch) >= batch_size:
-                config.db_conn.executemany(
-                    "INSERT INTO sentences (input_text, output_text) VALUES (?, ?)",
-                    batch
-                )
-                batch = []
+                else:
+                    input_templates = [input_template]
+
+                for input_template_item in input_templates:
+                    if has_empty_referenced_list(input_template_item, data_slot_lists):
+                        continue
+
+                    if hassil.intents.is_template(input_template_item):
+                        input_expression = hassil.parse_expression.parse_sentence(
+                            input_template_item
+                        )
+                        if isinstance(input_expression, Sentence):
+                            input_expression = input_expression.expression
+
+                        for input_text, maybe_output_text in sample_expression_with_output(
+                            input_expression,
+                            slot_lists=data_slot_lists,
+                            expansion_rules=expansion_rules,
+                            language=language,
+                        ):
+                            batch.append(
+                                (input_text, output_text or maybe_output_text or input_text)
+                            )
+                            num_sentences += 1
+                    else:
+                        batch.append(
+                            (input_template_item, output_text or input_template_item)
+                        )
+                        num_sentences += 1
+
+                    if len(batch) >= batch_size:
+                        config.db_conn.executemany(
+                            "INSERT INTO sentences (input_text, output_text) VALUES (?, ?)",
+                            batch,
+                        )
+                        batch = []
 
     if batch:
         config.db_conn.executemany(
@@ -326,11 +334,82 @@ def generate_sentences(sentences_yaml: Dict[str, Any], config: LanguageConfig):
     )
 
 
+def filter_slot_lists_for_context(
+    slot_lists: Dict[str, "SlotList"],
+    requires_context: Optional[Dict[str, Any]],
+    excludes_context: Optional[Dict[str, Any]],
+) -> Dict[str, "SlotList"]:
+    """Filter context-aware slot values for one sentence block."""
+    if not requires_context and not excludes_context:
+        return slot_lists
+
+    from hassil.intents import TextSlotList  # pylint: disable=import-outside-toplevel
+
+    filtered: Dict[str, "SlotList"] = {}
+    for list_name, slot_list in slot_lists.items():
+        if not isinstance(slot_list, TextSlotList):
+            filtered[list_name] = slot_list
+            continue
+
+        values = []
+        for value in slot_list.values:
+            context = value.context or {}
+            if context and not context_matches(context, requires_context, excludes_context):
+                continue
+            values.append(value)
+
+        filtered[list_name] = TextSlotList(name=slot_list.name, values=values)
+
+    return filtered
+
+
+def has_empty_referenced_list(template: str, slot_lists: Dict[str, "SlotList"]) -> bool:
+    """Return true if a template references an empty text slot list."""
+    from hassil.intents import TextSlotList  # pylint: disable=import-outside-toplevel
+
+    for list_name in re.findall(r"{([^}:]+)(?::[^}]+)?}", template):
+        slot_list = slot_lists.get(list_name)
+        if isinstance(slot_list, TextSlotList) and not slot_list.values:
+            return True
+
+    return False
+
+
+def context_matches(
+    value_context: Dict[str, Any],
+    requires_context: Optional[Dict[str, Any]],
+    excludes_context: Optional[Dict[str, Any]],
+) -> bool:
+    """Return true if a slot value context is allowed for a sentence block."""
+    if requires_context:
+        for key, expected in requires_context.items():
+            if isinstance(expected, dict) and expected.get("slot"):
+                continue
+            actual = value_context.get(key)
+            if isinstance(expected, Sequence) and not isinstance(expected, str):
+                if actual not in expected:
+                    return False
+            elif actual != expected:
+                return False
+
+    if excludes_context:
+        for key, excluded in excludes_context.items():
+            actual = value_context.get(key)
+            if isinstance(excluded, Sequence) and not isinstance(excluded, str):
+                if actual in excluded:
+                    return False
+            elif actual == excluded:
+                return False
+
+    return True
+
+
 # pylint: disable=too-many-locals,too-many-branches,too-many-nested-blocks
 def sample_expression_with_output(
     expression: "Expression",
     slot_lists: "Optional[Dict[str, SlotList]]" = None,
     expansion_rules: "Optional[Dict[str, Sentence]]" = None,
+    language: Optional[str] = None,
 ) -> Iterable[Tuple[str, Optional[str]]]:
     """Sample possible text strings and corresponding output text from an expression.
 
@@ -342,8 +421,10 @@ def sample_expression_with_output(
         RuleReference,
         Sequence,
         Alternative,
+        Permutation,
         TextChunk,
     )
+    import hassil.sample  # pylint: disable=import-outside-toplevel
     from hassil.intents import TextSlotList  # pylint: disable=import-outside-toplevel
     from hassil.errors import MissingListError, MissingRuleError  # pylint: disable=import-outside-toplevel
     from hassil.util import normalize_whitespace  # pylint: disable=import-outside-toplevel
@@ -351,6 +432,13 @@ def sample_expression_with_output(
     if isinstance(expression, TextChunk):
         chunk: TextChunk = expression
         yield (chunk.original_text, chunk.original_text)
+    elif hasattr(expression, "expression"):
+        yield from sample_expression_with_output(
+            expression.expression,
+            slot_lists,
+            expansion_rules,
+            language=language,
+        )
     elif isinstance(expression, Alternative):
         # Matches (a | b)
         for item in expression.items:
@@ -358,6 +446,7 @@ def sample_expression_with_output(
                 item,
                 slot_lists,
                 expansion_rules,
+                language=language,
             )
     elif isinstance(expression, Sequence):
         # Matches a b
@@ -368,6 +457,7 @@ def sample_expression_with_output(
                 sample_expression_with_output,
                 slot_lists=slot_lists,
                 expansion_rules=expansion_rules,
+                language=language,
             ),
             seq.items,
         )
@@ -381,6 +471,29 @@ def sample_expression_with_output(
                     "".join(w[1] for w in sentence_words if w[1] is not None)
                 ),
             )
+    elif isinstance(expression, Permutation):
+        # Matches all permutations of the grouped items.
+        perm: Permutation = expression
+        perm_sentences = [
+            list(
+                sample_expression_with_output(
+                    item,
+                    slot_lists,
+                    expansion_rules,
+                    language=language,
+                )
+            )
+            for item in perm.items
+        ]
+        for ordered_sentences in itertools.permutations(perm_sentences):
+            sentence_texts = itertools.product(*ordered_sentences)
+            for sentence_words in sentence_texts:
+                yield (
+                    normalize_whitespace("".join(w[0] for w in sentence_words)).strip(),
+                    normalize_whitespace(
+                        "".join(w[1] for w in sentence_words if w[1] is not None)
+                    ).strip(),
+                )
     elif isinstance(expression, ListReference):
         # {list} reference
         list_ref: ListReference = expression
@@ -402,6 +515,7 @@ def sample_expression_with_output(
                         text_value.text_in,
                         slot_lists,
                         expansion_rules,
+                        language=language,
                     ):
                         if is_first_text:
                             output_text = (
@@ -420,9 +534,17 @@ def sample_expression_with_output(
                         text_value.text_in,
                         slot_lists,
                         expansion_rules,
+                        language=language,
                     )
         else:
-            raise ValueError(f"Unexpected slot list type: {slot_list}")
+            for input_text in hassil.sample.sample_expression(
+                list_ref,
+                slot_lists=slot_lists,
+                expansion_rules=expansion_rules,
+                language=language,
+                expand_ranges=False,
+            ):
+                yield (input_text, input_text)
     elif isinstance(expression, RuleReference):
         # <rule> reference
         rule_ref: RuleReference = expression
@@ -435,6 +557,7 @@ def sample_expression_with_output(
             rule_body,
             slot_lists,
             expansion_rules,
+            language=language,
         )
     else:
         raise ValueError(f"Unexpected expression: {expression}")
@@ -543,8 +666,9 @@ class SentenceManager:
         language: str,
         hass_uri: str,
         hass_token: str,
-        poll_interval: float = 1.0,
+        poll_interval: float = 60.0,
         in_memory_db: bool = False,
+        custom_sentences_dirs: Optional[Sequence[Union[str, Path]]] = None,
     ):
         self.sentences_dir = Path(sentences_dir)
         self.language = language
@@ -552,8 +676,8 @@ class SentenceManager:
         self.hass_token = hass_token
         self.poll_interval = poll_interval
         self.in_memory_db = in_memory_db
+        self.custom_sentences_dirs = custom_sentences_dirs or []
         self.config: Optional[LanguageConfig] = None
-        self._file_hash: Optional[str] = None
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
@@ -580,7 +704,7 @@ class SentenceManager:
         return self.config
 
     async def _watch_loop(self):
-        """Poll for file changes."""
+        """Poll Home Assistant for refreshed sentence context."""
         while self._running:
             try:
                 await asyncio.sleep(self.poll_interval)
@@ -589,35 +713,24 @@ class SentenceManager:
                 _LOGGER.exception("Error in sentence watcher loop")
 
     async def _load_and_check(self):
-        """Check file hash and reload if changed."""
-        sentences_path = self.sentences_dir / f"{self.language}.yaml"
-        if not sentences_path.is_file():
-            return
-
+        """Reload sentence context from Home Assistant."""
         try:
-            # Calculate hash
-            import hashlib  # pylint: disable=import-outside-toplevel
             async with self._lock:
-                # Read file content to calculate hash
-                # We do this in a thread to avoid blocking the loop for large files,
-                # though for config files it's usually fine.
-                content = await asyncio.to_thread(sentences_path.read_bytes)
-                new_hash = hashlib.sha256(content).hexdigest()
-
-                if self._file_hash != new_hash:
-                    _LOGGER.info("Change detected in %s. Reloading...", sentences_path)
-                    # Reload config
-                    new_config = await load_sentences_for_language(
-                        self.sentences_dir,
-                        self.language,
-                        self.hass_uri,
-                        self.hass_token,
-                        self.in_memory_db,
-                    )
-                    if new_config:
-                        self.config = new_config
-                        self._file_hash = new_hash
-                        _LOGGER.info("Sentences reloaded successfully.")
+                _LOGGER.info("Refreshing sentences from Home Assistant...")
+                new_config = await load_sentences_for_language(
+                    self.sentences_dir,
+                    self.language,
+                    self.hass_uri,
+                    self.hass_token,
+                    self.in_memory_db,
+                    self.custom_sentences_dirs,
+                )
+                if new_config:
+                    old_config = self.config
+                    self.config = new_config
+                    if old_config and old_config.db_conn:
+                        old_config.db_conn.close()
+                    _LOGGER.info("Sentences refreshed successfully.")
         except Exception:  # pylint: disable=broad-exception-caught
             _LOGGER.exception("Failed to reload sentences")
 

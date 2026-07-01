@@ -6,11 +6,13 @@ services:
       - URI=tcp://0.0.0.0:10310
       - STT_URI=tcp://HOME_ASSISTANT_IP_OR_URI:10300
       - CORRECTION_THRESHOLD=15
+      - REFRESH_INTERVAL=60
       - LANGUAGE=es
       - DEBUG_LOGGING=TRUE
       - IN_MEMORY_DB=TRUE
       - LIMIT_SENTENCES=TRUE
       - ALLOW_UNKNOWN=FALSE
+      - CUSTOM_SENTENCES_DIRS=
       - HASS_TOKEN=LONG_LIVED_TOKEN_HERE
       - HASS_URI=ws://HOME_ASSISTANT_IP_OR_URI:8123/api/websocket
     volumes:
@@ -20,4 +22,3 @@ services:
     restart: unless-stopped
         
         
-
