@@ -665,7 +665,7 @@ def correct_sentence(
         final_text = fixed_row[1]
 
     if score > score_cutoff:
-        _LOGGER.warning("Sentence not recognized: %s", final_text)
+        _LOGGER.debug("No correction candidate within threshold: %s", final_text)
 
     _LOGGER.debug(
         "score=%s/%s, scorepct=%.2f%%, original=%s, final=%s",
