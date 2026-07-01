@@ -1,92 +1,105 @@
 # Wyoming RapidFuzz Proxy
-A Wyoming proxy that applies **RapidFuzz-based sentence correction** to the output of any Wyoming Speech-to-Text (STT) service using speech-to-phrase/Home Assistant sentence candidates.
 
----
+A Wyoming STT proxy that applies **RapidFuzz-based sentence correction** using speech-to-phrase/Home Assistant sentence candidates.
 
-# What is the Wyoming RapidFuzz Proxy and How Does It Work?
+It sits between Home Assistant and any upstream Wyoming Speech-to-Text service, forwards audio to that service, then optionally corrects the returned transcript before Home Assistant sees it.
 
-The Wyoming RapidFuzz Proxy enables RapidFuzz-based sentence correction with **any** STT service compatible with the Wyoming protocol.
+## Why use this?
 
-Its goal is to make general-purpose STT output look more like the sentence-oriented output produced by [OHF Voice speech-to-phrase](https://github.com/OHF-voice/speech-to-phrase), so Home Assistant's local NLP can still handle recognized Assist commands while unrecognized/open-ended phrases can fall through to another conversation agent, such as an LLM.
+General-purpose STT engines can produce good transcripts, but Home Assistant Assist works best when the transcript closely matches known sentence patterns, entity names, areas, and aliases.
 
-### Mechanism
+This proxy is intended to make upstream STT output look more like sentence-oriented output from [OHF Voice speech-to-phrase](https://github.com/OHF-voice/speech-to-phrase):
 
-The proxy operates as a middle layer between Home Assistant and your chosen Wyoming STT service. Its primary function is to:
+* recognized Assist-style commands can be corrected into phrases Home Assistant's local NLP understands
+* open-ended or unrecognized phrases can be preserved, allowing Home Assistant to fall back to another conversation agent such as an LLM
+* Vosk is not required as the recognizer; any Wyoming STT service can be used upstream
 
-1.  **Fetch Data:** Connect to Home Assistant upon startup, and again when Home Assistant emits reload/start events, to retrieve the latest Assist-exposed entities, areas, floors, sentence triggers, and ask-question answers.
-2.  **Intercept:** Intercept the raw transcribed voice command from the upstream STT service.
-3.  **Correct:** Apply the RapidFuzz sentence correction logic against the gathered sentence data.
-4.  **Pass Back:** Pass the corrected text back to Home Assistant.
+## How it works
 
-This allows third-party Wyoming STT services (such as Whisper or Microsoft STT) to benefit from a robust correction mechanism without requiring Vosk as the recognizer.
+```text
+Home Assistant ──audio──▶ Wyoming RapidFuzz Proxy ──audio──▶ Upstream Wyoming STT
+Home Assistant ◀─text──── Wyoming RapidFuzz Proxy ◀─text──── Upstream Wyoming STT
+                         │
+                         └─ RapidFuzz correction against generated candidates
+```
 
-### Communication Flow (Transparent Operation)
+On startup, and again when relevant Home Assistant reload/start events occur, the proxy builds a correction database from:
 
-The proxy is designed to be **transparent**. It exposes itself as a standard Wyoming STT service, requiring no special setup in Home Assistant beyond adding a regular Wyoming integration.
+1. bundled [OHF Voice speech-to-phrase](https://github.com/OHF-voice/speech-to-phrase) templates
+2. live Home Assistant context fetched over websocket
+3. optional custom sentence directories
+4. optional `/data/<language>.yaml` overlays
 
-1.  **Home Assistant to Proxy:** Home Assistant sends audio data to the proxy.
-2.  **Proxy to STT:** The proxy immediately forwards the audio data to the configured upstream STT service (e.g., Wyoming Whisper).
-3.  **STT to Proxy:** The upstream STT service returns the raw transcribed text.
-4.  **Correction:** The proxy intercepts the raw text and applies the RapidFuzz sentence correction.
-5.  **Proxy to Home Assistant:** The **corrected** text is sent back to Home Assistant, completing the command.
+For each transcript returned by the upstream STT service, the proxy searches the generated candidates and applies the closest correction when it is within the configured Levenshtein-distance threshold.
 
-From Home Assistant's perspective, it is simply communicating with a highly accurate STT service.
+Home Assistant sees the proxy as a normal Wyoming STT service.
 
----
+## Quick start
 
-# Acknowledgements
+### Prerequisites
 
-This project started from [Cheerpipe/wyoming_rapidfuzz_proxy](https://github.com/Cheerpipe/wyoming_rapidfuzz_proxy), which adapted RapidFuzz sentence correction from [Wyoming Vosk](https://github.com/rhasspy/wyoming-vosk). This fork keeps that RapidFuzz correction approach while using [OHF Voice speech-to-phrase](https://github.com/OHF-voice/speech-to-phrase) as the inspiration and source for the bundled sentence templates.
+* A running upstream Wyoming STT service, such as [wyoming-faster-whisper](https://github.com/rhasspy/wyoming-faster-whisper)
+* Docker
+* Docker Compose, or a similar container orchestration tool
+* A Home Assistant long-lived access token
 
-* Special thanks to **synesthesiam** for Wyoming Vosk and the original correction approach that inspired the upstream proxy.
-* Thanks to **Cheerpipe** for the upstream Wyoming RapidFuzz Proxy implementation that this fork builds on.
-* Thanks to the **OHF Voice speech-to-phrase** project for the sentence-template approach and bundled sentence data used by this fork.
-* The containerization approach was partially inspired by the scripts used in **wyoming-vosk-standalone** (https://github.com/dekiesel/wyoming-vosk-standalone).
+### Build and run
 
----
+```bash
+git clone https://github.com/farooqu/wyoming-rapidfuzz-proxy
+cd wyoming-rapidfuzz-proxy
+bash scripts/build.sh
+```
 
-# Prerequisites
+Optionally, run `build.sh` with `--enable-no-gil` to compile, install, and use Python 3.14.0 with no-GIL support. This makes Docker image creation slower.
 
-* A functional **upstream Wyoming Speech-to-Text service** (e.g., [wyoming-faster-whisper](https://github.com/rhasspy/wyoming-faster-whisper)).
-* **Docker**
-* **Docker Compose** (or a similar container orchestration tool).
+Before starting the container, edit `docker-compose.yaml` and set the required environment variables:
 
----
+* `HASS_URI`
+* `HASS_TOKEN`
+* `STT_URI`
 
-# Quick Start
+A sentence YAML file is not required for normal use. The image bundles pinned speech-to-phrase templates and combines them with live Home Assistant context.
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/Cheerpipe/wyoming_rapidfuzz_proxy
-    cd wyoming_rapidfuzz_proxy
-    ```
-2.  **Build the container image:**
-    ```bash
-    bash scripts/build.sh
-    ```
-Optionally you may run build.sh with `--enable-no-gil` parameter to compile, install and use python with NO-GIL support enabled and use Python 3.14.0. Docker image creation will be slower.
+Then start the proxy:
 
-3.  **Configure:** Edit the `docker-compose.yaml` file to set your **required** environment variables (`HASS_URI`, `HASS_TOKEN`, `STT_URI`). A sentence YAML file is no longer required; the proxy image bundles pinned speech-to-phrase templates plus live Home Assistant context.
-4.  **Optional custom sentences:** If you have custom sentence YAML files, mount them and set `CUSTOM_SENTENCES_DIRS` (see below).
-5.  **Run the container:**
-    ```bash
-    docker compose up -d
-    ```
-    (Use `-d` for detached execution.)
+```bash
+docker compose up -d
+```
 
----
+## Configuration
 
-# Bundled speech-to-phrase data
+| Variable | Description | Example / Default |
+| :--- | :--- | :--- |
+| `URI` | Address the proxy listens on. This is the Wyoming STT address Home Assistant connects to. | `tcp://0.0.0.0:10301` |
+| `STT_URI` | Connection URI for the upstream Wyoming STT service that performs transcription. | `tcp://192.168.1.100:10300` |
+| `HASS_URI` | **Required.** Home Assistant websocket URI. | `ws://homeassistant.local:8123/api/websocket` |
+| `HASS_TOKEN` | **Required.** Home Assistant long-lived access token with access to the needed websocket APIs. | `eyJhbGciOiJIUzI1NiI...` |
+| `LANGUAGE` | Language code for bundled speech-to-phrase templates and optional custom sentences. | `en` |
+| `CORRECTION_THRESHOLD` | Maximum Levenshtein distance allowed for a correction. See [Correction threshold](#correction-threshold). | `15` |
+| `CUSTOM_SENTENCES_DIRS` | Optional comma-separated directories using Home Assistant/speech-to-phrase custom sentence layout. | `/custom_sentences` |
+| `BUILTIN_SENTENCES_DIR` | Optional override for the bundled speech-to-phrase sentence directory. | `/opt/speech-to-phrase/sentences` |
+| `SHARED_LISTS_PATH` | Optional override for the bundled speech-to-phrase shared lists file. | `/opt/speech-to-phrase/shared_lists.yaml` |
+| `IN_MEMORY_DB` | If `TRUE`, use an in-memory SQLite sentence database instead of a file-backed database under `/data`. | `TRUE` |
+| `LIMIT_SENTENCES` | If `TRUE`, transcripts that do not match any defined sentence are discarded. | `FALSE` |
+| `ALLOW_UNKNOWN` | If `TRUE` and the STT service reports an `<unk>` token, the proxy can return `unknown_text` if defined in YAML. | `FALSE` |
+| `DEBUG_LOGGING` | Enable debug-level logging. | `FALSE` |
 
-The Docker image downloads [OHF Voice speech-to-phrase](https://github.com/OHF-voice/speech-to-phrase) at build time and copies only its runtime sentence data into the image:
+## Sentence sources
+
+The proxy builds correction candidates from several sources.
+
+### Bundled speech-to-phrase templates
+
+The Docker image downloads [OHF Voice speech-to-phrase](https://github.com/OHF-voice/speech-to-phrase) at build time and copies only the runtime sentence data into the image:
 
 * `/opt/speech-to-phrase/sentences/*.yaml`
 * `/opt/speech-to-phrase/shared_lists.yaml`
 * `/opt/speech-to-phrase/SPEECH_TO_PHRASE_REF`
 
-The pinned upstream ref is controlled by the Docker build argument `SPEECH_TO_PHRASE_REF`. By default it is pinned in the `Dockerfile`, so normal users do **not** need to mount or configure a built-in sentence path at runtime.
+The pinned upstream ref is controlled by the Docker build argument `SPEECH_TO_PHRASE_REF`. The default is pinned in the `Dockerfile`, so normal users do not need to mount or configure a built-in sentence path.
 
-To build with a different pinned ref using the included script:
+To build with a different pinned speech-to-phrase ref:
 
 ```bash
 SPEECH_TO_PHRASE_REF=<commit-sha> bash scripts/build.sh
@@ -111,75 +124,69 @@ python3 -m wyoming_rapidfuzz_proxy \
   ...
 ```
 
----
+### Live Home Assistant context
 
-# Volumes
+The proxy fetches live Home Assistant data over websocket and uses it to generate context-aware candidates:
 
-The proxy uses bundled speech-to-phrase sentence templates and live Home Assistant data, so a sentence YAML file is no longer required. The `/data` volume is still useful for the sentence database and optional overlays. You do not need to mount `/opt/speech-to-phrase` unless you intentionally want to override the pinned built-in templates.
+* Assist-exposed, non-disabled entities and their aliases
+* areas and floors with aliases
+* sentence trigger sentences from `conversation/sentences/list`
+* `assist_satellite.ask_question` answer sentences from automation/script configs
 
-| Path (Inside Container) | Description | Recommended Host Mount Example |
-| :--- | :--- | :--- |
-| **/data** | Stores the sentence database. If `/data/<language>.yaml` exists, it is treated as an optional overlay for extra `intents`, `lists`, `expansion_rules`, `no_correct_patterns`, or `unknown_text`. | `./data` |
-| custom sentence dir | Optional directory containing Home Assistant/speech-to-phrase style custom sentences, such as `/custom_sentences/en/*.yaml`. Configure with `CUSTOM_SENTENCES_DIRS`. | `/config/custom_sentences:/custom_sentences:ro` |
-
----
-
-# Sentence Sources
-
-The proxy now builds correction candidates from:
-
-1. Bundled curated templates from [OHF Voice speech-to-phrase](https://github.com/OHF-voice/speech-to-phrase). The Docker image pins these templates at build time and loads them from `/opt/speech-to-phrase` by default. These templates mirror Home Assistant Assist-style commands without expanding the full upstream `home-assistant-intents` corpus.
-2. Live Home Assistant context fetched over websocket:
-   * Assist-exposed, non-disabled entities and their aliases. Entity candidates are limited to entities returned by `homeassistant/expose_entity/list` with `conversation: true`.
-   * areas and floors with aliases
-   * sentence trigger sentences from `conversation/sentences/list`
-   * `assist_satellite.ask_question` answer sentences from automation/script configs
-3. Optional custom sentence directories configured by `CUSTOM_SENTENCES_DIRS`.
-4. Optional `/data/<language>.yaml` overlay for advanced users.
+Entity candidates are limited to entities returned by `homeassistant/expose_entity/list` with `conversation: true`.
 
 The proxy may fetch all Home Assistant states because the websocket API exposes state attributes in bulk, but it only uses attributes for Assist-exposed entity IDs when building the correction context. This keeps correction candidates aligned with the entities Assist can control or query.
 
-Home Assistant does not currently expose the complete merged built-in + custom HassIL intent corpus over websocket. Custom sentence files therefore need to be mounted into the proxy if you want them included.
+Home Assistant does not currently expose the complete merged built-in + custom HassIL intent corpus over websocket. Mount custom sentence files into the proxy if you want them included.
 
----
+### Custom sentences and overlays
 
-# Configuration (Environment Variables)
+For custom Home Assistant/speech-to-phrase style sentence files, mount a directory and set `CUSTOM_SENTENCES_DIRS`.
 
-| Variable | Description | Example |
+For English, the proxy looks for `<dir>/en/*.yaml` first, then the language-family directory. For example:
+
+```yaml
+environment:
+  - CUSTOM_SENTENCES_DIRS=/custom_sentences
+volumes:
+  - /config/custom_sentences:/custom_sentences:ro
+```
+
+The `/data` volume stores the generated sentence database. If `/data/<language>.yaml` exists, it is treated as an optional advanced overlay for additional `intents`, `lists`, `expansion_rules`, `no_correct_patterns`, or `unknown_text`.
+
+| Path inside container | Description | Recommended host mount example |
 | :--- | :--- | :--- |
-| **URI** | The URL defining the host and listening port for the **proxy itself**. This is the address Home Assistant connects to. | `tcp://0.0.0.0:10301` |
-| **STT_URI** | The connection URI for the **upstream Wyoming STT service** (the one providing the transcription). | `tcp://192.168.1.100:10300` |
-| **HASS_URI** | **REQUIRED.** The Home Assistant websocket URI. Used by the proxy to fetch current entities, areas, floors, and conversational triggers. | `ws://homeassistant.local:8123/api/websocket` |
-| **HASS_TOKEN** | **REQUIRED.** A Home Assistant **long-lived access token** with sufficient permissions to access the necessary API endpoints (entities, areas, etc.). | `eyJhbGciOiJIUzI1NiI...` |
-| **LANGUAGE** | The language code for bundled speech-to-phrase templates and optional custom sentences. | `en` |
-| **CORRECTION_THRESHOLD** | The maximum **Levenshtein distance** allowed for a correction to be applied. See the section below for details. | `15` |
-| **CUSTOM_SENTENCES_DIRS** | Optional comma-separated directories using Home Assistant/speech-to-phrase custom sentence layout. For English, the proxy looks for `<dir>/en/*.yaml` first, then the language family directory. | `/custom_sentences` |
-| **BUILTIN_SENTENCES_DIR** | Optional override for the speech-to-phrase built-in sentence directory. The Docker image already provides this by default. | `/opt/speech-to-phrase/sentences` |
-| **SHARED_LISTS_PATH** | Optional override for the speech-to-phrase shared lists file. The Docker image already provides this by default. | `/opt/speech-to-phrase/shared_lists.yaml` |
-| **LIMIT_SENTENCES** | If `TRUE`, transcripts that do not match any defined sentence will be discarded. | `FALSE` |
-| **ALLOW_UNKNOWN** | If `TRUE` and the STT service reports an `<unk>` token, the proxy can return a specific `unknown_text` (if defined in the YAML) instead of failing. | `FALSE` |
-| **DEBUG_LOGGING** | Set to `TRUE` to enable debug-level logging output. | `FALSE` |
+| `/data` | Sentence database and optional `/data/<language>.yaml` overlay. | `./data` |
+| custom sentence dir | Optional Home Assistant/speech-to-phrase style custom sentences. Configure with `CUSTOM_SENTENCES_DIRS`. | `/config/custom_sentences:/custom_sentences:ro` |
 
----
+## Correction threshold
 
-# Understanding CORRECTION\_THRESHOLD
+The correction process uses **Levenshtein distance** to compare the raw transcript from the upstream STT service against generated correction candidates.
 
-The correction process uses the **Levenshtein distance** to compare the raw transcribed text from the STT service against the generated correction candidates from speech-to-phrase templates, live Home Assistant context, custom sentence directories, and optional `/data/<language>.yaml` overlays.
+Levenshtein distance counts the minimum number of single-character edits needed to change one phrase into another. A distance of `0` means the phrases are identical.
 
-The Levenshtein distance is a metric that quantifies how similar two strings are by counting the minimum number of single-character edits (insertions, deletions, or substitutions) required to change one word or phrase into the other. A distance of `0` means the phrases are identical.
+`CORRECTION_THRESHOLD` sets the maximum distance allowed for correction:
 
-The **CORRECTION\_THRESHOLD** variable sets the maximum acceptable Levenshtein distance for a correction to be applied:
+* if the distance is less than or equal to the threshold, the closest candidate is returned
+* if the distance is greater than the threshold, the original transcript is preserved
 
-* If the distance is **less than or equal** to the threshold, the correction is applied (the closest matching sentence is used).
-* If the distance is **greater** than the threshold, the original, raw transcription is preserved.
-
-| Threshold Value | Effect | Risk |
+| Threshold | Effect | Risk |
 | :--- | :--- | :--- |
-| **0** | Disables correction entirely. | None. |
-| **Low (e.g., 1-5)** | Allows correction only for minor errors. | May miss valid corrections for longer sentences. |
-| **High (e.g., 20+)** | Forces a match even for severely misheard phrases. | Open-ended phrases not in your list may be incorrectly corrected to a pre-defined command. |
+| `0` | Disables correction. | None. |
+| Low, such as `1`-`5` | Corrects only minor transcript errors. | May miss valid corrections for longer sentences. |
+| High, such as `20+` | Allows more aggressive correction. | Open-ended phrases may be incorrectly changed to a known command. |
 
-**Recommendation:** A practical threshold should be set to a value that allows for correction of small errors without aggressively changing valid, yet uncommon, phrases. You should adjust this value based on the common length of entity and area names in your Home Assistant configuration.
+A practical threshold should allow common STT mistakes to be corrected without aggressively changing valid open-ended phrases. Tune it based on the length and similarity of entity, area, and alias names in your Home Assistant setup.
 
-# Disclaimer
+## Acknowledgements
+
+This project started from [Cheerpipe/wyoming_rapidfuzz_proxy](https://github.com/Cheerpipe/wyoming_rapidfuzz_proxy), which adapted RapidFuzz sentence correction from [Wyoming Vosk](https://github.com/rhasspy/wyoming-vosk). This fork keeps that RapidFuzz correction approach while using [OHF Voice speech-to-phrase](https://github.com/OHF-voice/speech-to-phrase) as the inspiration and source for bundled sentence templates.
+
+* Special thanks to **synesthesiam** for Wyoming Vosk and the original correction approach that inspired the upstream proxy.
+* Thanks to **Cheerpipe** for the upstream Wyoming RapidFuzz Proxy implementation that this fork builds on.
+* Thanks to the **OHF Voice speech-to-phrase** project for the sentence-template approach and bundled sentence data used by this fork.
+* The containerization approach was partially inspired by the scripts used in [wyoming-vosk-standalone](https://github.com/dekiesel/wyoming-vosk-standalone).
+
+## Note
+
 This project was developed using extensive AI assistance for generating the final source code.
