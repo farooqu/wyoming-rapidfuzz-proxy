@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 import asyncio
 try:
-    from .hass_api import get_hass_info
+    from .hass_api import get_hass_info, wait_for_hass_reload_event
 except ImportError:
-    from hass_api import get_hass_info
+    from hass_api import get_hass_info, wait_for_hass_reload_event
 
 if TYPE_CHECKING:
     from hassil.expression import Expression, Sentence
@@ -666,7 +666,6 @@ class SentenceManager:
         language: str,
         hass_uri: str,
         hass_token: str,
-        poll_interval: float = 60.0,
         in_memory_db: bool = False,
         custom_sentences_dirs: Optional[Sequence[Union[str, Path]]] = None,
     ):
@@ -674,12 +673,11 @@ class SentenceManager:
         self.language = language
         self.hass_uri = hass_uri
         self.hass_token = hass_token
-        self.poll_interval = poll_interval
         self.in_memory_db = in_memory_db
         self.custom_sentences_dirs = custom_sentences_dirs or []
         self.config: Optional[LanguageConfig] = None
         self._running = False
-        self._task: Optional[asyncio.Task] = None
+        self._reload_event_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
 
     async def start(self):
@@ -687,15 +685,15 @@ class SentenceManager:
         # Initial load
         await self._load_and_check()
         self._running = True
-        self._task = asyncio.create_task(self._watch_loop())
+        self._reload_event_task = asyncio.create_task(self._reload_event_loop())
 
     async def stop(self):
         """Stop the watcher task."""
         self._running = False
-        if self._task:
-            self._task.cancel()
+        if self._reload_event_task:
+            self._reload_event_task.cancel()
             try:
-                await self._task
+                await self._reload_event_task
             except asyncio.CancelledError:
                 pass
 
@@ -703,14 +701,24 @@ class SentenceManager:
         """Get the current language configuration."""
         return self.config
 
-    async def _watch_loop(self):
-        """Poll Home Assistant for refreshed sentence context."""
+    async def _reload_event_loop(self):
+        """Refresh when Home Assistant emits reload/start events."""
         while self._running:
             try:
-                await asyncio.sleep(self.poll_interval)
+                _LOGGER.info("Listening for Home Assistant reload events")
+                reason = await wait_for_hass_reload_event(self.hass_token, self.hass_uri)
+                if not self._running:
+                    return
+
+                _LOGGER.info("Home Assistant reload event detected: %s", reason)
+                await asyncio.sleep(2)
                 await self._load_and_check()
+            except asyncio.CancelledError:
+                raise
             except Exception:  # pylint: disable=broad-exception-caught
-                _LOGGER.exception("Error in sentence watcher loop")
+                if self._running:
+                    _LOGGER.exception("Error in Home Assistant reload event listener")
+                    await asyncio.sleep(10)
 
     async def _load_and_check(self):
         """Reload sentence context from Home Assistant."""

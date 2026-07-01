@@ -6,7 +6,6 @@ services:
       - URI=tcp://0.0.0.0:10310
       - STT_URI=tcp://HOME_ASSISTANT_IP_OR_URI:10300
       - CORRECTION_THRESHOLD=15
-      - REFRESH_INTERVAL=60
       - LANGUAGE=es
       - DEBUG_LOGGING=TRUE
       - IN_MEMORY_DB=TRUE

@@ -32,12 +32,6 @@ async def main() -> None:
         help="Directory for the sentence database and optional [language].yaml overlay",
     )
     parser.add_argument(
-        "--refresh-interval",
-        type=float,
-        default=60.0,
-        help="Seconds between Home Assistant sentence/entity refreshes. (Default=60)",
-    )
-    parser.add_argument(
         "--custom-sentences-dir",
         action="append",
         default=[],
@@ -145,7 +139,6 @@ async def main() -> None:
         language=cli_args.language,
         hass_uri=cli_args.hass_uri,
         hass_token=cli_args.hass_token,
-        poll_interval=cli_args.refresh_interval,
         in_memory_db=cli_args.in_memory_db,
         custom_sentences_dirs=cli_args.custom_sentences_dir,
     )

@@ -496,6 +496,75 @@ async def get_hass_info(token: str, uri: str) -> HomeAssistantInfo:
     )
 
 
+async def wait_for_hass_reload_event(token: str, uri: str) -> str:
+    """Block until Home Assistant emits an event that should refresh sentences."""
+    current_id = 0
+
+    def next_id() -> int:
+        """Increment and return the next message ID."""
+        nonlocal current_id
+        current_id += 1
+        return current_id
+
+    async with aiohttp.ClientSession() as session:
+        async with session.ws_connect(uri, max_msg_size=0) as websocket:
+            # Authenticate
+            msg = await websocket.receive_json()
+            assert msg["type"] == "auth_required", msg
+
+            await websocket.send_json(
+                {
+                    "type": "auth",
+                    "access_token": token,
+                }
+            )
+
+            msg = await websocket.receive_json()
+            assert msg["type"] == "auth_ok", msg
+
+            await websocket.send_json(
+                {
+                    "id": next_id(),
+                    "type": "subscribe_events",
+                    "event_type": "call_service",
+                }
+            )
+            await websocket.send_json(
+                {
+                    "id": next_id(),
+                    "type": "subscribe_events",
+                    "event_type": "homeassistant_started",
+                }
+            )
+
+            while True:
+                msg = await websocket.receive_json()
+                msg_type = msg.get("type")
+                if msg_type == "result":
+                    assert msg["success"], msg
+                    continue
+
+                if msg_type != "event":
+                    continue
+
+                event = msg.get("event", {})
+                event_type = event.get("event_type")
+                if event_type == "homeassistant_started":
+                    return "homeassistant_started"
+
+                if event_type != "call_service":
+                    continue
+
+                event_data = event.get("data", {})
+                domain = event_data.get("domain")
+                service = event_data.get("service")
+                if (domain, service) in {
+                    ("conversation", "reload"),
+                    ("homeassistant", "reload_core_config"),
+                }:
+                    return f"{domain}.{service}"
+
+
 def _find_ask_question_answers(item: Any) -> Generator[str]:
     """Yields answer sentences from automation or script config for ask_question action."""
     if isinstance(item, dict):

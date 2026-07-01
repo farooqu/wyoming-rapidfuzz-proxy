@@ -11,7 +11,6 @@ echo --------------------------------------------
 flags=()
 
 CORRECTION_THRESHOLD=${CORRECTION_THRESHOLD:-15}
-REFRESH_INTERVAL=${REFRESH_INTERVAL:-60}
 LANGUAGE=${LANGUAGE:-en}
 DEBUG_LOGGING=${DEBUG_LOGGING:-FALSE}
 IN_MEMORY_DB=${IN_MEMORY_DB:-TRUE}
@@ -43,7 +42,6 @@ echo HASS_TOKEN             =   ${HASS_TOKEN}
 echo HASS_URI               =   ${HASS_URI}
 echo URI                    =   ${URI}
 echo CORRECTION_THRESHOLD   =   ${CORRECTION_THRESHOLD}
-echo REFRESH_INTERVAL       =   ${REFRESH_INTERVAL}
 echo LANGUAGE               =   ${LANGUAGE}
 echo DEBUG_LOGGING          =   ${DEBUG_LOGGING}
 echo IN_MEMORY_DB           =   ${IN_MEMORY_DB}
@@ -61,6 +59,5 @@ python3 -m wyoming_rapidfuzz_proxy \
     --uri ${URI} \
     --data-dir /data \
     --correction-threshold $CORRECTION_THRESHOLD \
-    --refresh-interval $REFRESH_INTERVAL \
     --language $LANGUAGE \
     ${flags[@]}

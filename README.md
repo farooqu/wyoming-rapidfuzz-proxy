@@ -11,7 +11,7 @@ The Wyoming RapidFuzz Proxy enables the use of the powerful sentence correction 
 
 The proxy operates as a middle layer between Home Assistant and your chosen Wyoming STT service. Its primary function is to:
 
-1.  **Fetch Data:** Connect to Home Assistant upon startup and periodically thereafter to retrieve the latest Assist-exposed entities, areas, floors, sentence triggers, and ask-question answers.
+1.  **Fetch Data:** Connect to Home Assistant upon startup, and again when Home Assistant emits reload/start events, to retrieve the latest Assist-exposed entities, areas, floors, sentence triggers, and ask-question answers.
 2.  **Intercept:** Intercept the raw transcribed voice command from the upstream STT service.
 3.  **Correct:** Apply the RapidFuzz sentence correction logic against the gathered sentence data.
 4.  **Pass Back:** Pass the corrected text back to Home Assistant.
@@ -112,7 +112,6 @@ Home Assistant does not currently expose the complete merged built-in + custom H
 | **HASS_TOKEN** | **REQUIRED.** A Home Assistant **long-lived access token** with sufficient permissions to access the necessary API endpoints (entities, areas, etc.). | `eyJhbGciOiJIUzI1NiI...` |
 | **LANGUAGE** | The language code for bundled speech-to-phrase templates and optional custom sentences. | `en` |
 | **CORRECTION_THRESHOLD** | The maximum **Levenshtein distance** allowed for a correction to be applied. See the section below for details. | `15` |
-| **REFRESH_INTERVAL** | Seconds between Home Assistant refreshes. Refresh rebuilds correction candidates from current exposed entities, areas, floors, sentence triggers, ask-question answers, and optional custom sentence files. | `60` |
 | **CUSTOM_SENTENCES_DIRS** | Optional comma-separated directories using Home Assistant/speech-to-phrase custom sentence layout. For English, the proxy looks for `<dir>/en/*.yaml` first, then the language family directory. | `/custom_sentences` |
 | **LIMIT_SENTENCES** | If `TRUE`, transcripts that do not match any defined sentence will be discarded. | `FALSE` |
 | **ALLOW_UNKNOWN** | If `TRUE` and the STT service reports an `<unk>` token, the proxy can return a specific `unknown_text` (if defined in the YAML) instead of failing. | `FALSE` |
