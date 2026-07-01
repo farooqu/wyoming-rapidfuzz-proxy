@@ -1,11 +1,13 @@
 # Wyoming RapidFuzz Proxy
-A Wyoming proxy that applies **Vosk RapidFuzz sentence correction** to the output of any Wyoming Speech-to-Text (STT) service.
+A Wyoming proxy that applies **RapidFuzz-based sentence correction** to the output of any Wyoming Speech-to-Text (STT) service using speech-to-phrase/Home Assistant sentence candidates.
 
 ---
 
 # What is the Wyoming RapidFuzz Proxy and How Does It Work?
 
-The Wyoming RapidFuzz Proxy enables the use of the powerful sentence correction feature (originally from Wyoming Vosk) with **any** STT service compatible with the Wyoming protocol.
+The Wyoming RapidFuzz Proxy enables RapidFuzz-based sentence correction with **any** STT service compatible with the Wyoming protocol.
+
+Its goal is to make general-purpose STT output look more like the sentence-oriented output produced by [OHF Voice speech-to-phrase](https://github.com/OHF-voice/speech-to-phrase), so Home Assistant's local NLP can still handle recognized Assist commands while unrecognized/open-ended phrases can fall through to another conversation agent, such as an LLM.
 
 ### Mechanism
 
@@ -16,7 +18,7 @@ The proxy operates as a middle layer between Home Assistant and your chosen Wyom
 3.  **Correct:** Apply the RapidFuzz sentence correction logic against the gathered sentence data.
 4.  **Pass Back:** Pass the corrected text back to Home Assistant.
 
-This allows third-party Wyoming STT services (such as Whisper or Microsoft STT) to benefit from a robust correction mechanism that was previously exclusive to Wyoming Vosk.
+This allows third-party Wyoming STT services (such as Whisper or Microsoft STT) to benefit from a robust correction mechanism without requiring Vosk as the recognizer.
 
 ### Communication Flow (Transparent Operation)
 
@@ -34,9 +36,11 @@ From Home Assistant's perspective, it is simply communicating with a highly accu
 
 # Acknowledgements
 
-This project is a dedicated wrapper utilizing the RapidFuzz sentence correction logic found in **Wyoming Vosk** (https://github.com/rhasspy/wyoming-vosk).
+This project started from [Cheerpipe/wyoming_rapidfuzz_proxy](https://github.com/Cheerpipe/wyoming_rapidfuzz_proxy), which adapted RapidFuzz sentence correction from [Wyoming Vosk](https://github.com/rhasspy/wyoming-vosk). This fork keeps that RapidFuzz correction approach while using [OHF Voice speech-to-phrase](https://github.com/OHF-voice/speech-to-phrase) as the inspiration and source for the bundled sentence templates.
 
-* Special thanks to **synesthesiam** for developing the core correction code.
+* Special thanks to **synesthesiam** for Wyoming Vosk and the original correction approach that inspired the upstream proxy.
+* Thanks to **Cheerpipe** for the upstream Wyoming RapidFuzz Proxy implementation that this fork builds on.
+* Thanks to the **OHF Voice speech-to-phrase** project for the sentence-template approach and bundled sentence data used by this fork.
 * The containerization approach was partially inspired by the scripts used in **wyoming-vosk-standalone** (https://github.com/dekiesel/wyoming-vosk-standalone).
 
 ---
@@ -160,7 +164,7 @@ Home Assistant does not currently expose the complete merged built-in + custom H
 
 # Understanding CORRECTION\_THRESHOLD
 
-The correction process uses the **Levenshtein distance** to compare the raw transcribed text from the STT service against the list of pre-defined, correct sentences in your `<language>.yaml` file.
+The correction process uses the **Levenshtein distance** to compare the raw transcribed text from the STT service against the generated correction candidates from speech-to-phrase templates, live Home Assistant context, custom sentence directories, and optional `/data/<language>.yaml` overlays.
 
 The Levenshtein distance is a metric that quantifies how similar two strings are by counting the minimum number of single-character edits (insertions, deletions, or substitutions) required to change one word or phrase into the other. A distance of `0` means the phrases are identical.
 
