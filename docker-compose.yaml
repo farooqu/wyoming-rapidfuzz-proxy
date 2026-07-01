@@ -9,7 +9,6 @@ services:
       - LANGUAGE=es
       - DEBUG_LOGGING=TRUE
       - IN_MEMORY_DB=TRUE
-      - LIMIT_SENTENCES=TRUE
       - ALLOW_UNKNOWN=FALSE
       - CUSTOM_SENTENCES_DIRS=
       # Optional overrides. The image bundles pinned speech-to-phrase data here by default.

@@ -84,11 +84,6 @@ async def main() -> None:
         default=15,
     )
     parser.add_argument(
-        "--limit-sentences",
-        action="store_true",
-        help="Only sentences in [language].yaml can be spoken",
-    )
-    parser.add_argument(
         "--allow-unknown",
         action="store_true",
         help="Return empty transcript when unknown words are spoken",

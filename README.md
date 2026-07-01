@@ -81,7 +81,6 @@ docker compose up -d
 | `BUILTIN_SENTENCES_DIR` | Optional override for the bundled speech-to-phrase sentence directory. | `/opt/speech-to-phrase/sentences` |
 | `SHARED_LISTS_PATH` | Optional override for the bundled speech-to-phrase shared lists file. | `/opt/speech-to-phrase/shared_lists.yaml` |
 | `IN_MEMORY_DB` | If `TRUE`, use an in-memory SQLite sentence database instead of a file-backed database under `/data`. | `TRUE` |
-| `LIMIT_SENTENCES` | If `TRUE`, transcripts that do not match any defined sentence are discarded. | `FALSE` |
 | `ALLOW_UNKNOWN` | If `TRUE` and the STT service reports an `<unk>` token, the proxy can return `unknown_text` if defined in YAML. | `FALSE` |
 | `DEBUG_LOGGING` | Enable debug-level logging. | `FALSE` |
 
